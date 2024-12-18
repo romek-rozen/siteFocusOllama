@@ -5,9 +5,9 @@ Narzędzie do analizy tematycznej stron internetowych z wykorzystaniem modelu em
 ## Wymagania
 
 Przed rozpoczęciem pracy upewnij się, że masz zainstalowane następujące elementy:
-- [Python 3.11](https://www.python.org/)
-- [Streamlit](https://streamlit.io/)
-- [Ollama](https://ollama.com/) (do obsługi embeddingów)
+- Python 3.11 (https://www.python.org/)
+- Streamlit (https://streamlit.io/)
+- Ollama (https://ollama.com/) (do obsługi embeddingów)
 - Model embeddingów: `snowflake-arctic-embed2`
 
 ## Instalacja i konfiguracja
@@ -76,3 +76,7 @@ Cache embeddingów można wyczyścić w aplikacji za pomocą przycisku "Wyczyś�
 ## Debugowanie
 
 Możesz włączyć tryb debugowania, zaznaczając opcję "Debug Mode" w pasku bocznym aplikacji.
+
+---
+
+[Roman Rozenberger](https://rozenberger.com)
