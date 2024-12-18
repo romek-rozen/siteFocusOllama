@@ -13,8 +13,6 @@ Przed rozpoczęciem pracy upewnij się, że masz zainstalowane następujące ele
 
 ## Instalacja i konfiguracja
 
-## Instalacja i konfiguracja
-
 ### Pobierz kod źródłowy
 Możesz pobrać kod na dwa sposoby:
 
