@@ -26,7 +26,7 @@ cd siteFocusOllama
 ```
 
 #### Przez przeglądarkę:
-1. Wejdź na stronę @https://github.com/romek-rozen/siteFocusOllama
+1. Wejdź na stronę `https://github.com/romek-rozen/siteFocusOllama`
 2. Kliknij zielony przycisk "Code"
 3. Wybierz "Download ZIP"
 4. Rozpakuj pobrany plik
