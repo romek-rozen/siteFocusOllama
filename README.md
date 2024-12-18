@@ -5,11 +5,10 @@ Narzędzie do analizy tematycznej stron internetowych z wykorzystaniem modelu em
 ## Wymagania
 
 Przed rozpoczęciem pracy upewnij się, że masz zainstalowane następujące elementy:
-- Python 3.11 (https://www.python.org/)
-- Streamlit (https://streamlit.io/)
-- Ollama (https://ollama.com/) (do obsługi embeddingów)
+- Python 3.11: python\.org
+- Streamlit: streamlit\.io
+- Ollama: ollama\.com (do obsługi embeddingów)
 - Model embeddingów: `snowflake-arctic-embed2`
-
 ## Instalacja i konfiguracja
 
 ### 1. Utwórz wirtualne środowisko
