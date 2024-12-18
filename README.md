@@ -59,7 +59,7 @@ ollama serve
 streamlit run app.py
 ```
 
-3. Otwórz przeglądarkę i przejdź pod wyświetlony adres URL (domyślnie http://localhost:8501).
+3. Otwórz przeglądarkę i przejdź pod wyświetlony adres URL (domyślnie localhost:8501).
 
 ## Funkcjonalności
 
