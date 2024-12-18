@@ -9,16 +9,38 @@ Przed rozpoczęciem pracy upewnij się, że masz zainstalowane następujące ele
 - Streamlit: streamlit\.io
 - Ollama: ollama\.com (do obsługi embeddingów)
 - Model embeddingów: `snowflake-arctic-embed2`
+- Git git-scm\.com
+
 ## Instalacja i konfiguracja
 
-### 1. Utwórz wirtualne środowisko
+## Instalacja i konfiguracja
+
+### Pobierz kod źródłowy
+Możesz pobrać kod na dwa sposoby:
+
+#### Przez Git (zalecane):
+```bash
+# Sklonuj repozytorium
+git clone https://github.com/romek-rozen/siteFocusOllama.git
+
+# Przejdź do katalogu projektu
+cd siteFocusOllama
+```
+
+#### Przez przeglądarkę:
+1. Wejdź na stronę @https://github.com/romek-rozen/siteFocusOllama
+2. Kliknij zielony przycisk "Code"
+3. Wybierz "Download ZIP"
+4. Rozpakuj pobrany plik
+
+### Utwórz wirtualne środowisko
 Aby zapewnić izolację środowiska, utwórz wirtualne środowisko:
 
 ```bash
 python -m venv myenv
 ```
 
-### 2. Aktywuj środowisko
+### Aktywuj środowisko
 
 Windows:
 ```bash
@@ -30,13 +52,13 @@ Mac/Linux:
 source myenv/bin/activate
 ```
 
-### 3. Zainstaluj wymagane pakiety
+### Zainstaluj wymagane pakiety
 Zainstaluj wszystkie zależności z pliku requirements.txt:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Skonfiguruj Ollama
+### Skonfiguruj Ollama
 Pobierz wymagany model embeddingów:
 ```bash
 ollama pull snowflake-arctic-embed2
