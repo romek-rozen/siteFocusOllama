@@ -1,3 +1,6 @@
+import os
+os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count())
+
 import streamlit as st
 from streamlit.components.v1 import html
 import numpy as np
@@ -498,7 +501,8 @@ st.sidebar.checkbox('Debug Mode', value=False, key='debug')
 try:
     test_embedding = get_embeddings("test")
     if test_embedding is not None:
-        st.success("Successfully connected to Ollama")
+        #st.success("Successfully connected to Ollama")
+        st.success(f"Successfully connected to Ollama, {os.cpu_count()} Logical CPUs")
 except Exception as e:
     st.error(f"Could not connect to Ollama. Make sure it's running on localhost:11434\nError: {e}")
     st.stop()
