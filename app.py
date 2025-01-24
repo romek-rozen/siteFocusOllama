@@ -66,6 +66,7 @@ def fetch_sitemap_urls(domain):
     sitemap_urls = [
         f"https://{domain}/sitemap.xml",
         f"https://{domain}/sitemap_index.xml",
+        f"https://{domain}/console/integration/execute/name/GoogleSitemap",
         f"https://{domain}/robots.txt"
     ]
     all_urls = []
