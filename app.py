@@ -1,6 +1,5 @@
 import os
 os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count())
-
 import streamlit as st
 from streamlit.components.v1 import html
 import numpy as np
@@ -16,9 +15,152 @@ import matplotlib.pyplot as plt
 import io
 from sklearn.metrics.pairwise import cosine_similarity
 from urllib.parse import urlparse
+from openai import OpenAI
+import tiktoken
+import pyhtml2md  # Nowy import
+
+
+async def process_result(result):
+    """Przetwarza pojedynczy wynik crawlowania."""
+    if result.success:
+        print(f"Sukces dla {result.url}")
+        return True
+    else:
+        print(f"Niepowodzenie dla {result.url}: {result.error_message}")
+        return False
+
+# Na początku pliku, gdzie inicjalizujemy inne session_state
+if 'crawl_cache' not in st.session_state:
+    st.session_state.crawl_cache = {}
+
+if 'url_status_cache' not in st.session_state:
+    st.session_state.url_status_cache = {}
+
+if 'model_list' not in st.session_state:
+    st.session_state.model_list = []
+if 'selected_model' not in st.session_state:
+    st.session_state.selected_model = None
+if 'model_cache' not in st.session_state:  # Dodajemy cache dla wybranego modelu
+    st.session_state.model_cache = None
+if 'model_initialized' not in st.session_state:  # Nowa flaga
+    st.session_state.model_initialized = False
+if 'analysis_results' not in st.session_state:  # Dodajemy cache dla wyników
+    st.session_state.analysis_results = {}
+
+# Dodajmy przycisk do czyszczenia cache crawla obok przycisku czyszczenia cache embeddingów
+if st.sidebar.button("Wyczyść cache crawla"):
+    st.session_state.crawl_cache = {}
+    st.success("Cache crawla został wyczyszczony!")
+
+def clean_text(text):
+    """Czyści i formatuje tekst."""
+    # Usuwamy nadmiarowe białe znaki
+    text = ' '.join(text.split())
+    # Usuwamy znaki specjalne (oprócz kropek i przecinków)
+    text = re.sub(r'[^\w\s.,]', ' ', text)
+    # Zamieniamy wielokrotne spacje na pojedyncze
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def count_tokens(text):
+    """Liczy tokeny w tekście używając tiktoken."""
+    try:
+        enc = tiktoken.get_encoding("cl100k_base")  # Używamy standardowego encodera
+        tokens = enc.encode(text)
+        return len(tokens)
+    except Exception as e:
+        print(f"Błąd podczas liczenia tokenów: {e}")
+        return 0
+
+def crawl_url(url):
+    """Crawluje pojedynczy URL używając BeautifulSoup."""
+    print(f"\nCrawling: {url}")
+    
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+            },
+            timeout=30,
+            allow_redirects=False
+        )
+        
+        if response.status_code != 200:
+            print(f"[SKIP] Status code: {response.status_code}")
+            if 300 <= response.status_code < 400:
+                print(f"  => Redirect to: {response.headers.get('location', 'unknown')}")
+            return response.status_code, None
+            
+        # Po prostu dekodujemy z utf-8 ignorując błędy
+        content = response.content.decode('utf-8', errors='ignore')
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        # Znajdujemy body
+        body = soup.find('body')
+        if not body:
+            print(f"[ERROR] No body tag found")
+            return None, None
+            
+        # Usuwamy niepotrzebne elementy
+        for tag in body.find_all(['nav', 'footer', 'header', 'script', 'style', 'iframe', 'noscript']):
+            tag.decompose()
+            
+        # Wyciągamy cały HTML z body
+        html_content = str(body)
+        
+        # # Konfigurujemy konwerter markdown
+        # options = pyhtml2md.Options()
+        # options.splitLines = False  # Nie dzielimy na linie
+        
+        # # Konwertujemy HTML na Markdown
+        # converter = pyhtml2md.Converter(html_content, options)
+        # markdown_content = converter.convert()
+        
+        # if not converter.ok():
+        #     print(f"[WARN] Markdown conversion had issues for {url}")
+        
+        print(f"[OK] Successfully processed {url} ({len(html_content)} chars)")
+        return response.status_code, html_content  # Zwracamy HTML zamiast markdown
+        
+    except Exception as e:
+        print(f"[ERROR] Processing failed for {url}: {str(e)}")
+        return None, None
+
+def crawl_urls(urls):
+    """Crawluje listę URLi."""
+    crawled_pages = {}
+    total_tokens = 0
+    
+    # Najpierw sprawdzamy cache
+    for url in urls:
+        if url in st.session_state.crawl_cache:
+            text = st.session_state.crawl_cache[url]
+            num_tokens = count_tokens(text)
+            total_tokens += num_tokens
+            print(f"[CACHE] Using cached content for {url} ({num_tokens} tokens)")
+            crawled_pages[url] = text
+            continue
+            
+        print(f"Crawling: {url}")
+        status_code, text = crawl_url(url)
+        
+        if status_code == 200 and text:
+            num_tokens = count_tokens(text)
+            total_tokens += num_tokens
+            st.session_state.crawl_cache[url] = text
+            crawled_pages[url] = text
+            print(f"[OK] {url} - {len(text)} chars, {num_tokens} tokens")
+        else:
+            print(f"[SKIP] {url} => Status code: {status_code}")
+    
+    print(f"\nSuccessfully crawled {len(crawled_pages)} pages with status 200 (from {len(urls)} total URLs)")
+    print(f"Total tokens: {total_tokens}")
+    return crawled_pages
 
 #GO!
-
 if 'embeddings_cache' not in st.session_state:
     st.session_state.embeddings_cache = {}
 
@@ -26,35 +168,39 @@ if st.sidebar.button("Wyczyść cache embeddingów"):
     st.session_state.embeddings_cache = {}
     st.success("Cache został wyczyszczony!")
 
-@st.cache_data
 def get_embeddings(text):
     """Get embeddings using Ollama API with caching"""
     # Sprawdzamy cache
     cache_key = text
     if cache_key in st.session_state.embeddings_cache:
-        print(f"Używam embeddingu z cache dla tekstu: {text[:100]}...")
+        #print(f"Używam embeddingu z cache dla tekstu: {text[:25]}...")
         return st.session_state.embeddings_cache[cache_key]
     
     try:
-        print(f"Generowanie embeddingu dla tekstu: {text[:100]}...")
+        # Debugowanie stanu modelu
+        print(f"Aktualny model w sesji: {st.session_state.selected_model}")
+        print(f"Model w cache: {st.session_state.model_cache}")
+        
+        if not st.session_state.selected_model:
+            if st.session_state.model_cache:  # Próbujemy użyć modelu z cache
+                st.session_state.selected_model = st.session_state.model_cache
+            else:
+                st.error("Nie wybrano modelu! Proszę kliknąć 'Pobierz modele' i wybrać model.")
+                return None
+            
         response = requests.post(
-            'http://localhost:11434/api/embed',
+            f"{st.session_state.host.rstrip('/')}/api/embed",
             json={
-                'model': 'snowflake-arctic-embed2',
+                'model': st.session_state.selected_model,
                 'input': text
             }
         )
         response.raise_for_status()
         data = response.json()
         
-        if st.session_state.get('debug', False):
-            st.write("API Response:", data)
-            
         if 'embeddings' in data and len(data['embeddings']) > 0:
-            # Zapisujemy do cache
             embedding = np.array(data['embeddings'][0])
             st.session_state.embeddings_cache[cache_key] = embedding
-            print("Embedding wygenerowany pomyślnie")
             return embedding
         else:
             print(f"Błąd: Nieoczekiwana struktura odpowiedzi API: {data}")
@@ -62,6 +208,60 @@ def get_embeddings(text):
     except Exception as e:
         print(f"Błąd podczas generowania embeddingu: {e}")
         return None
+
+def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False, processed_sitemaps=None, all_urls=None):
+    """Fetch URLs from a sitemap XML file."""
+    if processed_sitemaps is None:
+        processed_sitemaps = set()
+    if all_urls is None:
+        all_urls = set()
+    
+    # Jeśli ta sitemap była już przetworzona, pomijamy
+    if sitemap_url in processed_sitemaps:
+        print(f"[SKIP] Już przetworzono: {sitemap_url}")
+        return all_urls
+    
+    processed_sitemaps.add(sitemap_url)
+    print(f"\n--- Przetwarzanie nowej sitemap: {sitemap_url} ---")
+    
+    try:
+        response = requests.get(
+            sitemap_url, 
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }, 
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, "lxml-xml")
+        
+        if soup.find_all("sitemap"):
+            print("Znaleziono zagnieżdżone sitemapy:")
+            for sitemap in soup.find_all("sitemap"):
+                loc = sitemap.find("loc")
+                if loc:
+                    nested_url = loc.text
+                    if nested_url not in processed_sitemaps:
+                        print(f"- {nested_url}")
+                        if recursive:
+                            fetch_sitemap_urls_from_xml(nested_url, domain, recursive=True, 
+                                                      processed_sitemaps=processed_sitemaps, 
+                                                      all_urls=all_urls)
+        else:
+            new_urls = 0
+            for loc in soup.find_all("loc"):
+                url = loc.text
+                if not re.search(r"\.(jpg|jpeg|png|gif|svg|webp|bmp|tif|tiff)$", url, re.IGNORECASE):
+                    if url not in all_urls:
+                        all_urls.add(url)
+                        new_urls += 1
+            print(f"Dodano {new_urls} nowych URLi (łącznie: {len(all_urls)})")
+            
+    except Exception as e:
+        print(f"Błąd podczas przetwarzania {sitemap_url}: {str(e)}")
+    
+    return all_urls
 
 def fetch_sitemap_urls(domain):
     """Fetch and parse URLs from sitemaps, excluding images and handling nested sitemaps."""
@@ -72,8 +272,10 @@ def fetch_sitemap_urls(domain):
         f"https://{domain}/console/integration/execute/name/GoogleSitemap",
         f"https://{domain}/robots.txt"
     ]
-    all_urls = []
+    processed_sitemaps = set()
+    all_urls = set()
 
+    print(f"\nRozpoczynam przetwarzanie map witryny dla: {domain}")
     for sitemap_url in sitemap_urls:
         try:
             response = requests.get(sitemap_url, headers={"User-Agent": "SiteFocusTool/1.0"}, timeout=10)
@@ -82,58 +284,20 @@ def fetch_sitemap_urls(domain):
                 for line in response.text.splitlines():
                     if line.lower().startswith("sitemap:"):
                         nested_sitemap_url = line.split(":", 1)[1].strip()
-                        all_urls.extend(fetch_sitemap_urls_from_xml(nested_sitemap_url, domain, recursive=True))
+                        all_urls.update(fetch_sitemap_urls_from_xml(nested_sitemap_url, domain, 
+                                                                  recursive=True, 
+                                                                  processed_sitemaps=processed_sitemaps,
+                                                                  all_urls=all_urls))
             else:
-                all_urls.extend(fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=True))
+                all_urls.update(fetch_sitemap_urls_from_xml(sitemap_url, domain, 
+                                                          recursive=True,
+                                                          processed_sitemaps=processed_sitemaps,
+                                                          all_urls=all_urls))
         except requests.RequestException:
             continue
-    return list(set(all_urls))
-
-def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False):
-    """Fetch URLs from a sitemap XML file."""
-    print(f"\n--- Przetwarzanie sitemap: {sitemap_url} ---")
-    urls = []
-    try:
-        response = requests.get(
-            sitemap_url, 
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }, 
-            timeout=10
-        )
-        print(f"Status odpowiedzi: {response.status_code}")
-        response.raise_for_status()
-        
-        content_type = response.headers.get('content-type', '')
-        print(f"Typ zawartości: {content_type}")
-        
-        soup = BeautifulSoup(response.content, "lxml-xml")
-        
-        # Debugowanie zawartości XML
-        print(f"Zawartość XML (pierwsze 500 znaków):")
-        print(response.text[:500])
-        
-        if soup.find_all("sitemap"):
-            print("Znaleziono zagnieżdżone sitemapy")
-            for sitemap in soup.find_all("sitemap"):
-                loc = sitemap.find("loc")
-                if loc:
-                    nested_url = loc.text
-                    print(f"Zagnieżdżona sitemap: {nested_url}")
-                    if recursive:
-                        urls.extend(fetch_sitemap_urls_from_xml(nested_url, domain, recursive=True))
-        else:
-            for loc in soup.find_all("loc"):
-                url = loc.text
-                if not re.search(r"\.(jpg|jpeg|png|gif|svg|webp|bmp|tif|tiff)$", url, re.IGNORECASE):
-                    urls.append(url)
-            print(f"Znaleziono {len(urls)} URLi")
             
-    except Exception as e:
-        print(f"Błąd podczas przetwarzania {sitemap_url}: {str(e)}")
-        print(f"Typ błędu: {type(e).__name__}")
-    
-    return urls
+    print(f"\nZnaleziono łącznie {len(all_urls)} unikalnych URLi")
+    return list(all_urls)
 
 def clean_text_from_url(url, domain):
     """Clean URL by removing root domain and extracting readable text."""
@@ -491,21 +655,141 @@ def get_radius_interpretation(radius):
 # Streamlit Interface
 st.title("SiteFocus Tool (Ollama API Version)")
 
+# Sprawdzenie dostępności Ollamy
+try:
+    response = requests.get('http://localhost:11434/api/tags')
+    ollama_available = response.status_code == 200
+    if ollama_available:
+        st.success("✅ Wykryto lokalną instalację Ollamy")
+except requests.exceptions.ConnectionError:
+    ollama_available = False
+    st.warning("⚠️ Nie wykryto lokalnej instalacji Ollamy")
+
+# Wybór dostawcy embeddingów
+col1, col2, col3 = st.columns([1, 1, 1])
+
+with col1:
+    provider = st.radio(
+        "Wybierz dostawcę:",
+        options=["Ollama", "OpenAI", "Jina"],
+        index=0,
+    )
+
+with col2:
+    if provider == "Ollama":
+        st.session_state.host = st.text_input(
+            "Host:",
+            value="http://localhost:11434/",
+            help="http://localhost:11434/"
+        )
+    else:
+        st.write("Endpoint: -")
+
+with col3:
+    if provider in ["OpenAI", "Jina"]:
+        api_key = st.text_input(
+            "Klucz API:",
+            type="password"
+        )
+    else:
+        st.write("API: -")
+
+# Guzik do pobierania modeli
+if st.button("Pobierz modele"):
+    print(f"\n--- Pobieranie modeli dla {provider} ---")
+    
+    if provider == "Ollama":
+        try:
+            host_url = st.session_state.host.rstrip('/')  # Używamy zapisanego hosta
+            print(f"Próba połączenia z Ollama na URL: {host_url}")
+            response = requests.get(f'{host_url}/api/tags')
+            print(f"Status odpowiedzi: {response.status_code}")
+            
+            if response.status_code == 200:
+                models = response.json()
+                #print(f"Otrzymano odpowiedź: {models}")
+                
+                if models.get('models'):
+                    st.session_state.model_list = [model['name'] for model in models['models']]
+                    print(f"Znaleziono modele: {st.session_state.model_list}")
+                    st.success("Pobrano listę modeli")
+                else:
+                    st.session_state.model_list = []
+                    print("Brak modeli w odpowiedzi")
+                    st.info("Brak dostępnych modeli")
+            else:
+                print(f"Błąd odpowiedzi: {response.text}")
+                st.error(f"Błąd podczas pobierania modeli: {response.status_code}")
+        except requests.exceptions.ConnectionError as e:
+            print(f"Błąd połączenia: {e}")
+            st.error(f"Nie można połączyć się z Ollama na URL: {host_url}")
+        except Exception as e:
+            print(f"Nieoczekiwany błąd: {e}")
+            st.error(f"Wystąpił nieoczekiwany błąd: {str(e)}")
+            
+    elif provider == "OpenAI":
+        if not api_key:
+            print("Brak klucza API OpenAI")
+            st.error("Wprowadź klucz API OpenAI")
+        else:
+            try:
+                print("Próba połączenia z OpenAI API")
+                headers = {"Authorization": f"Bearer {api_key}"}
+                response = requests.get('https://api.openai.com/v1/models', headers=headers)
+                print(f"Status odpowiedzi: {response.status_code}")
+                
+                if response.status_code == 200:
+                    models = response.json()
+                    print(f"Otrzymano odpowiedź: {models}")
+                    
+                    embedding_models = [model['id'] for model in models['data'] if 'embedding' in model['id']]
+                    if embedding_models:
+                        st.session_state.model_list = embedding_models
+                        print(f"Znaleziono modele do embeddingu: {embedding_models}")
+                        st.success("Pobrano listę modeli")
+                    else:
+                        print("Nie znaleziono modeli do embeddingu")
+                        st.info("Brak dostępnych modeli do embeddingów")
+                else:
+                    print(f"Błąd odpowiedzi: {response.text}")
+                    st.error(f"Błąd podczas pobierania modeli: {response.status_code}")
+            except Exception as e:
+                print(f"Nieoczekiwany błąd: {e}")
+                st.error(f"Wystąpił błąd: {str(e)}")
+    
+    elif provider == "Jina":
+        if not api_key:
+            print("Brak klucza API Jina")
+            st.error("Wprowadź klucz API Jina")
+        else:
+            print("Ustawiam dostępne modele Jina")
+            st.session_state.model_list = ["jina-embeddings-v3", "jina-clip-v2"]
+            print(f"Dostępne modele Jina: {st.session_state.model_list}")
+            st.success("Pobrano listę modeli")
+
+# W miejscu gdzie wybieramy model
+if st.session_state.model_list:
+    if not st.session_state.model_initialized:
+        # Inicjalizujemy model tylko raz
+        st.session_state.selected_model = st.session_state.model_list[0]
+        st.session_state.model_initialized = True
+    
+    # Wyświetlamy selectbox z aktualnie wybranym modelem
+    selected = st.selectbox(
+        "Wybierz model:", 
+        st.session_state.model_list,
+        index=st.session_state.model_list.index(st.session_state.selected_model)
+    )
+    
+    # Aktualizujemy model tylko jeśli użytkownik faktycznie zmienił wybór
+    if selected != st.session_state.selected_model:
+        st.session_state.selected_model = selected
+        print(f"Zmieniono model na: {selected}")
 
 # Debug mode toggle
 if 'debug' not in st.session_state:
     st.session_state.debug = False
 st.sidebar.checkbox('Debug Mode', value=False, key='debug')
-
-# Test connection to Ollama
-try:
-    test_embedding = get_embeddings("test")
-    if test_embedding is not None:
-        #st.success("Successfully connected to Ollama")
-        st.success(f"Successfully connected to Ollama, {os.cpu_count()} Logical CPUs")
-except Exception as e:
-    st.error(f"Could not connect to Ollama. Make sure it's running on localhost:11434\nError: {e}")
-    st.stop()
 
 # Najpierw pole URL referencyjnego
 reference_url = st.text_input(
@@ -533,16 +817,25 @@ st.markdown("""
 
 if st.button("START"):
     if domains:
-        # Generujemy embedding dla URL referencyjnego (jeśli podany)
+        # Najpierw crawlujemy URL referencyjny (jeśli podany)
         if reference_url:
-            print(f"Generowanie embeddingu dla URL referencyjnego: {reference_url}")
-            reference_text = clean_text_from_url(reference_url, reference_url.split('/')[2])
-            reference_embedding = get_embeddings(reference_text)
-            if reference_embedding is not None:
-                reference_embedding = reference_embedding / norm(reference_embedding)
-                st.success("Pomyślnie wygenerowano embedding dla URL referencyjnego")
+            ref_crawled = crawl_urls([reference_url])
+            if ref_crawled and reference_url in ref_crawled:
+                reference_text = ref_crawled[reference_url]
+                # Zapisz do pliku nadpisując poprzednią zawartość
+                with open("reference_text.txt", "w", encoding="utf-8") as f:
+                    f.write(reference_text)
+                print(reference_text)
+                reference_embedding = get_embeddings(reference_text)
+                if reference_embedding is not None:
+                    reference_embedding = reference_embedding / norm(reference_embedding)
+                    st.success("Pomyślnie wygenerowano embedding dla URL referencyjnego")
+                else:
+                    st.error("Nie udało się wygenerować embeddingu dla URL referencyjnego")
+                    st.stop()
             else:
-                st.error("Nie udało się wygenerować embeddingu dla URL referencyjnego")
+                st.error("Failed to crawl reference URL")
+                st.stop()
         
         # Dzielimy tekst na listę domen i usuwamy puste linie
         domain_list = [d.strip() for d in domains.split('\n') if d.strip()]
@@ -563,24 +856,47 @@ if st.button("START"):
                     
                 st.info(f"Found {len(urls)} URLs for {domain}")
                 
-                # Przetwarzanie URLi
-                cleaned_texts = [clean_text_from_url(url, domain) for url in urls]
-                embeddings = []
-                valid_urls = []
+                # Sprawdzamy statusy i crawlujemy od razu strony z 200
+                crawled_pages = crawl_urls(urls)
+                if not crawled_pages:
+                    st.warning(f"No valid pages found from {len(urls)} URLs")
+                    continue
+                    
+                valid_urls = list(crawled_pages.keys())
+                texts = list(crawled_pages.values())
+                st.info(f"Successfully crawled {len(crawled_pages)} pages with status 200 (from {len(urls)} total URLs)")
                 
-                for idx, (url, text) in enumerate(zip(urls, cleaned_texts)):
-                    embedding = get_embeddings(text)
+                # Generowanie embeddingów
+                embeddings = []
+                valid_urls = []  # Resetujemy listę, bo będziemy dodawać tylko te z udanymi embeddingami
+
+                for url, text in crawled_pages.items():
+                    print(f"sGeneruję embedding dla URL: {url}")
+                    embedding = get_embeddings(text)  # Używamy pobranej treści
                     if embedding is not None:
                         normalized_embedding = embedding / norm(embedding)
                         embeddings.append(normalized_embedding)
                         valid_urls.append(url)
                 
-                # Analiza pojedynczej domeny
-                if len(embeddings) > 0:
+                # Najpierw obliczamy wyniki
+                if embeddings:
+                    st.success(f"Successfully generated {len(embeddings)} embeddings with model {st.session_state.selected_model}")
+                    
+                    # Najpierw obliczamy wyniki
                     embeddings = np.array(embeddings)
                     site_focus_score, site_radius, centroid, deviations = calculate_site_focus_and_radius(embeddings)
                     
-                    # 1. Metryki z interpretacją
+                    # Potem zapisujemy do cache
+                    st.session_state.analysis_results[domain] = {
+                        'embeddings': embeddings,
+                        'valid_urls': valid_urls,
+                        'site_focus_score': site_focus_score,
+                        'site_radius': site_radius,
+                        'centroid': centroid,
+                        'deviations': deviations
+                    }
+                    
+                    # Wyświetlamy wyniki
                     st.subheader("📊 Metryki spójności tematycznej")
                     col1, col2 = st.columns(2)
                     
@@ -627,13 +943,7 @@ if st.button("START"):
                                     - Duże odchylenia od głównego tematu  
                                     - Może wskazywać na brak spójnej strategii treści  
                                     """)
-                        
-
-                    
                     # Dodajemy szczegółowe wyjaśnienie skali
-                    
-                    
-
                     st.markdown("""💡 **Optymalne wartości** zależą od typu strony i jej przeznaczenia. Dla wyspecjalizowanego bloga tematycznego korzystne będą wysokie wartości Site Focus Score i niskie Site Radius. Dla portalu informacyjnego naturalne będą średnie wartości obu metryk.
                     """)
                     
@@ -810,4 +1120,15 @@ if st.button("START"):
                 * Dalej od środka = większa różnica w treści
             - Kolor punktów reprezentuje odległość (zielony = blisko, czerwony = daleko)
             """)
+
+        # Po wygenerowaniu embeddingów
+        if domain in st.session_state.analysis_results:
+            results = st.session_state.analysis_results[domain]
+            # Wyświetlamy zapisane wyniki...
+            st.success(f"Using cached results for {domain} with {len(results['embeddings'])} embeddings")
+            # ... reszta wyświetlania wyników ...
+
+if st.sidebar.button("Wyczyść cache wyników"):
+    st.session_state.analysis_results = {}
+    st.success("Cache wyników został wyczyszczony")
 
