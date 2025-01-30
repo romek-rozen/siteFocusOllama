@@ -1,101 +1,68 @@
-# SiteFocus Tool
+# SiteFocus Tool 🎯
 
-Narzędzie do analizy tematycznej stron internetowych z wykorzystaniem modelu embeddingów `snowflake-arctic-embed2` i biblioteki Streamlit.
+Narzędzie do analizy spójności tematycznej stron internetowych wykorzystujące embeddingi tekstu.
 
-## Wymagania
+## 🌟 Funkcje
 
-Przed rozpoczęciem pracy upewnij się, że masz zainstalowane następujące elementy:
-- Python 3.11: python\.org
-- Streamlit: streamlit\.io
-- Ollama: ollama\.com (do obsługi embeddingów)
-- Model embeddingów: `snowflake-arctic-embed2`
-- Git git-scm\.com
+- Analiza spójności tematycznej stron internetowych
+- Wsparcie dla wielu dostawców embeddingów (Ollama, OpenAI, Jina)
+- Automatyczne crawlowanie stron z sitemap
+- Inteligentne czyszczenie treści (usuwanie menu, stopek, reklam)
+- Wizualizacja wyników
+- Cache dla crawlowanych stron i embeddingów
 
-## Instalacja i konfiguracja
+## 📋 Wymagania
 
-### Pobierz kod źródłowy
-Możesz pobrać kod na dwa sposoby:
+- Python 3.8+
+- Ollama (opcjonalnie dla lokalnych embeddingów)
+- Klucz API OpenAI (opcjonalnie)
+- Klucz API Jina (opcjonalnie)
 
-#### Przez Git (zalecane):
+## 🚀 Instalacja
+
+1. Sklonuj repozytorium:
 ```bash
-# Sklonuj repozytorium
-git clone https://github.com/romek-rozen/siteFocusOllama.git
-
-# Przejdź do katalogu projektu
-cd siteFocusOllama
+git clone https://github.com/username/sitefocus.git
+cd sitefocus
 ```
 
-#### Przez przeglądarkę:
-1. Wejdź na stronę `https://github.com/romek-rozen/siteFocusOllama`
-2. Kliknij zielony przycisk "Code"
-3. Wybierz "Download ZIP"
-4. Rozpakuj pobrany plik
-
-### Utwórz wirtualne środowisko
-Aby zapewnić izolację środowiska, utwórz wirtualne środowisko:
-
-```bash
-python -m venv myenv
-```
-
-### Aktywuj środowisko
-
-Windows:
-```bash
-myenv\Scripts\activate
-```
-
-Mac/Linux:
-```bash
-source myenv/bin/activate
-```
-
-### Zainstaluj wymagane pakiety
-Zainstaluj wszystkie zależności z pliku requirements.txt:
+2. Zainstaluj wymagane pakiety:
 ```bash
 pip install -r requirements.txt
 ```
 
-### Skonfiguruj Ollama
-Pobierz wymagany model embeddingów:
-```bash
-ollama pull snowflake-arctic-embed2
-```
+3. (Opcjonalnie) Zainstaluj i uruchom Ollamę:
+- [Instrukcje instalacji Ollamy](https://ollama.ai/download)
 
-Uruchom serwer Ollama:
-```bash
-ollama serve
-```
+## 🎮 Użycie
 
-## Uruchamianie narzędzia
-
-1. Upewnij się, że serwer Ollama jest uruchomiony:
-```bash
-ollama serve
-```
-
-2. Uruchom aplikację Streamlit:
+1. Uruchom aplikację:
 ```bash
 streamlit run app.py
 ```
 
-3. Otwórz przeglądarkę i przejdź pod wyświetlony adres URL (domyślnie localhost:8501).
+2. Wybierz dostawcę embeddingów (Ollama/OpenAI/Jina)
+3. Wprowadź URL referencyjny (opcjonalnie)
+4. Wprowadź listę domen do analizy
+5. Kliknij START
 
-## Funkcjonalności
+## 📊 Metryki
 
-- Analiza tematyczna stron internetowych
-- Generowanie embeddingów przy użyciu Ollama API
-- Wizualizacje 2D i 3D (t-SNE, wykresy sferyczne)
-- Analiza spójności tematycznej z metrykami Site Focus Score i Site Radius
+- **Site Focus Score** - Miara spójności tematycznej (0-100%)
+  - <30% - Niska spójność
+  - 30-60% - Średnia spójność
+  - >60% - Wysoka spójność
 
-## Czyszczenie cache
+## 🔧 Konfiguracja
 
-Cache embeddingów można wyczyścić w aplikacji za pomocą przycisku "Wyczyść cache embeddingów" w pasku bocznym.
+- Ollama: Domyślnie `http://localhost:11434/`
+- OpenAI: Wymaga klucza API
+- Jina: Wymaga klucza API
 
-## Debugowanie
+## 📝 Licencja
 
-Możesz włączyć tryb debugowania, zaznaczając opcję "Debug Mode" w pasku bocznym aplikacji.
+MIT License
 
----
+## 👥 Autorzy
 
-[Roman Rozenberger](https://rozenberger.com)
+- [Roman Rozenberger](https://rozenberger.com)

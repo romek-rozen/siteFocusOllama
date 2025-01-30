@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from sklearn.manifold import TSNE
 from numpy.linalg import norm
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import re
 import matplotlib.pyplot as plt
 import io
@@ -21,6 +21,7 @@ from markdownify import MarkdownConverter as md
 import uuid
 import atexit
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 st.set_page_config(
     page_title="SiteFocus Tool - Analiza spójności tematycznej",
@@ -92,53 +93,130 @@ def count_tokens(text):
 
 
 def crawl_url(url):
-    """Crawluje pojedynczy URL używając BeautifulSoup."""
-    #print(f"\nCrawling: {url}")
-    
     try:
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-            },
-            timeout=30,
-            allow_redirects=False
-        )
+        print(f"\n[DEBUG] Próba pobrania: {url}")
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        })
+        
+        # Nie akceptujemy kompresji Brotli
+        session.headers["Accept-Encoding"] = "gzip, deflate"
+        
+        response = session.get(url, timeout=30, allow_redirects=False)
+        print(f"[DEBUG] Status: {response.status_code}")
+        print(f"[DEBUG] Headers: {dict(response.headers)}")
+        print(f"[DEBUG] Content type: {response.headers.get('content-type')}")
         
         if response.status_code != 200:
-            print(f"[SKIP] Status code: {response.status_code}")
-            if 300 <= response.status_code < 400:
-                print(f"  => Redirect to: {response.headers.get('location', 'unknown')}")
             return response.status_code, None
-            
-        # Po prostu dekodujemy z utf-8 ignorując błędy
+        
+        # Używamy requests.content zamiast .text aby mieć surowe dane
         content = response.content.decode('utf-8', errors='ignore')
+        
         soup = BeautifulSoup(content, 'html.parser')
+        
+        # Usuwamy komentarze HTML
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
         
         # Znajdujemy body
         body = soup.find('body')
         if not body:
-            print(f"[ERROR] No body tag found")
             return None, None
             
-        # Usuwamy niepotrzebne elementy
-        for tag in body.find_all(['nav', 'footer', 'header', 'script', 'style', 'iframe', 'noscript']):
-            tag.decompose()
+        # Najpierw usuwamy tylko najbardziej oczywiste elementy
+        elements_to_remove = [
+            'script', 'style', 'noscript', 'iframe',  # Elementy techniczne
+            'footer',  # Stopka
+            'img',    # Obrazki
+            'svg',    # SVG grafiki
+            'picture', # Responsywne obrazki
+            'figure',  # Figury z obrazkami
+        ]
+        
+        for tag in elements_to_remove:
+            for element in body.find_all(tag):
+                element.decompose()
+        
+        # Usuwamy linki nawigacyjne i puste
+        for link in body.find_all('a'):
+            text = link.text.strip().lower()
+            if not text or text == 'scroll to top' or text == 'do góry' or text == 'skip to content':
+                link.decompose()
+            else:
+                # Zachowujemy tekst linku, ale usuwamy sam tag
+                link.replace_with(text)
+        
+        # Usuwamy wszystkie elementy z selektorami
+        selectors = [
+            # Nawigacja
+            '[role*="navigation"]',
+            '[role*="nav"]',
+            '[role*="menu"]',
+            '[class*="main-menu"]',
             
+            # Stopka i ciasteczka
+            '[class*="footer"]',
+            '[class*="cookie-banner"]',
+            '[class*="cookie"]',
+            
+            # Popupy i modalne
+            '[class*="popup"]',
+            '[class*="modal"]',
+            
+            # Skip linki - wszystkie możliwe warianty
+            '[class*="skip-link"]',
+            '[class*="skip"]',
+            '[class*="screen-reader"]',
+            '[class*="sr-only"]',
+            '[class*="visually-hidden"]',
+            '[href="#content"]',
+            '[href="#main"]',
+            '[href="#main-content"]',
+            
+            # Sidebar i breadcrumby
+            '[class*="sidebar"]',
+            '[class*="breadcrumb"]',
+            
+            # Elementy wizualne
+            '[class*="gallery"]',
+            '[class*="slider"]',
+            '[class*="carousel"]',
+            
+            # Inne
+            '[data-nosnippet]',
+        ]
+        
+        # Usuwamy wszystkie elementy z selektorami
+        for selector in selectors:
+            for element in body.select(selector):
+                element.decompose()
+        
         # Wyciągamy cały HTML z body
         html_content = str(body)
+        #print(html_content)
         
-        # Konwertujemy HTML na Markdown
-        converter = md(heading_style='ATX', strip_document='STRIP')
+        # Konwertujemy HTML na Markdown z dodatkowymi opcjami
+        converter = md(
+            heading_style='ATX',
+            strip_document='STRIP',
+            wrap=True,  # Zawijanie tekstu
+            wrap_width=80,  # Szerokość zawijania
+            newline_style='SPACES',  # Używaj spacji zamiast \n
+            escape_asterisks=True,  # Escapuj gwiazdki
+            escape_underscores=True  # Escapuj podkreślenia
+        )
         markdown_content = converter.convert(html_content)
         
-        # Czyścimy tekst z nadmiarowych białych znaków
-        markdown_content = ' '.join(markdown_content.split())  # Usuwa podwójne spacje i znaki nowej linii
-        
+        # Czyścimy tekst
+        markdown_content = ' '.join(markdown_content.split())
         #print(markdown_content)
-        print(f"[OK] Successfully processed {url} ({len(markdown_content)} chars)")
+        
         return response.status_code, markdown_content
         
     except Exception as e:
@@ -195,22 +273,34 @@ def get_embeddings(text, provider="ollama"):
         return st.session_state.embeddings_cache[cache_key]
     
     embedding = None
+    max_retries = 3
+    retry_delay = 2  # sekundy
     
     try:
         provider = provider.lower()
         
         if provider == "ollama":
-            response = requests.post(
-                f"{st.session_state.host.rstrip('/')}/api/embed",
-                json={
-                    'model': st.session_state.selected_model,
-                    'input': text
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-            if 'embeddings' in data and len(data['embeddings']) > 0:
-                embedding = np.array(data['embeddings'][0])
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        f"{st.session_state.host.rstrip('/')}/api/embed",
+                        json={
+                            'model': st.session_state.selected_model,
+                            'input': text
+                        }
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if 'embeddings' in data and len(data['embeddings']) > 0:
+                        embedding = np.array(data['embeddings'][0])
+                        break
+                except Exception as e:
+                    print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                    if attempt < max_retries - 1:
+                        print(f"[INFO] Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    raise  # Re-raise the last exception if all retries failed
             
         elif provider == "openai":
             response = requests.post(
@@ -358,14 +448,36 @@ def clean_text_from_url(url, domain):
     return text.strip()
 
 def calculate_site_focus_and_radius(embeddings):
-    """Oblicza Site Focus Score i promień."""
+    """Oblicza Site Focus Score, Site Radius i odległości od centroidu."""
+    # Obliczamy centroid (średni punkt wszystkich embeddingów)
     centroid = np.mean(embeddings, axis=0)
-    deviations = np.array([
-        1 - cosine_similarity(embedding.reshape(1, -1), centroid.reshape(1, -1))[0][0]
-        for embedding in embeddings
-    ])
-    # Teraz deviations to "odległości od centrum"
-    return np.mean(deviations), np.std(deviations), centroid, deviations
+    # Normalizujemy centroid
+    centroid = centroid / np.linalg.norm(centroid)
+    
+    # Obliczamy odległości używając cosine_similarity
+    deviations = []
+    for embedding in embeddings:
+        # Normalizujemy embedding
+        embedding_normalized = embedding / np.linalg.norm(embedding)
+        # Obliczamy podobieństwo cosinusowe
+        similarity = cosine_similarity(
+            centroid.reshape(1, -1), 
+            embedding_normalized.reshape(1, -1)
+        )[0][0]
+        # Zamieniamy na odległość
+        distance = 1 - similarity
+        deviations.append(distance)
+    
+    # Konwertujemy na numpy array
+    deviations = np.array(deviations)
+    
+    # Site Radius to średnia odległość od centroidu
+    site_radius = np.mean(deviations)
+    
+    # Site Focus Score to 1 minus znormalizowany Site Radius
+    site_focus_score = max(0, 1 - site_radius)  # zabezpieczenie przed ujemnymi wartościami
+    
+    return site_focus_score, site_radius, centroid, deviations
 
 def plot_gradient_strip_with_indicator(score, title):
     """Visualize the score as a gradient strip with an indicator."""
@@ -907,22 +1019,13 @@ if st.button("START"):
             ref_crawled = crawl_urls([reference_url])
             if ref_crawled and reference_url in ref_crawled:
                 reference_text = ref_crawled[reference_url]
-                # Zapisz do pliku nadpisując poprzednią zawartość
-                reference_file = f"reference_text_{st.session_state.session_id}.txt"
-                with open(reference_file, "w", encoding="utf-8") as f:
-                    f.write(reference_text)
-                print(reference_text)
                 reference_embedding = get_averaged_embedding(reference_text, provider=provider)
                 if reference_embedding is not None:
                     reference_embedding = reference_embedding / norm(reference_embedding)
                     st.success("Pomyślnie wygenerowano embedding dla URL referencyjnego")
                 else:
                     st.error("Nie udało się wygenerować embeddingu dla URL referencyjnego")
-                    st.stop()
-            else:
-                st.error("Failed to crawl reference URL")
-                st.stop()
-        
+            
         # Dzielimy tekst na listę domen i usuwamy puste linie
         domain_list = [d.strip() for d in domains.split('\n') if d.strip()]
         
