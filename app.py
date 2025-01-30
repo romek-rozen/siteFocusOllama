@@ -19,6 +19,11 @@ from openai import OpenAI
 import tiktoken
 from markdownify import MarkdownConverter as md
 
+st.set_page_config(
+    page_title="SiteFocus Tool - Analiza spójności tematycznej",
+    page_icon="🎯",
+    initial_sidebar_state="expanded",
+)
 
 
 async def process_result(result):
@@ -724,7 +729,7 @@ def get_averaged_embedding(text, provider="ollama"):
     return averaged_embedding
 
 # Streamlit Interface
-st.title("SiteFocus Tool (Ollama API Version)")
+st.title("SiteFocus Tool")
 
 # Sprawdzenie dostępności Ollamy
 try:
