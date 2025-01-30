@@ -18,6 +18,9 @@ from urllib.parse import urlparse
 from openai import OpenAI
 import tiktoken
 from markdownify import MarkdownConverter as md
+import uuid
+import atexit
+from concurrent.futures import ThreadPoolExecutor
 
 st.set_page_config(
     page_title="SiteFocus Tool - Analiza spójności tematycznej",
@@ -25,6 +28,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Dla równoległego przetwarzania
+executor = ThreadPoolExecutor(max_workers=5)  # Limit równoległych requestów
 
 async def process_result(result):
     """Przetwarza pojedynczy wynik crawlowania."""
@@ -57,6 +62,13 @@ if 'analysis_results' not in st.session_state:  # Dodajemy cache dla wyników
 if st.sidebar.button("Wyczyść cache crawla"):
     st.session_state.crawl_cache = {}
     st.success("Cache crawla został wyczyszczony!")
+
+# Na początku pliku, gdzie inicjalizujemy session_state
+if 'api_keys' not in st.session_state:
+    st.session_state.api_keys = {
+        'openai': None,
+        'jina': None
+    }
 
 def clean_text(text):
     """Czyści i formatuje tekst."""
@@ -168,13 +180,17 @@ def crawl_urls(urls):
 if 'embeddings_cache' not in st.session_state:
     st.session_state.embeddings_cache = {}
 
+# Dodajmy unikalny identyfikator sesji
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
 if st.sidebar.button("Wyczyść cache embeddingów"):
     st.session_state.embeddings_cache = {}
     st.success("Cache został wyczyszczony!")
 
 def get_embeddings(text, provider="ollama"):
     """Get embeddings using selected provider."""
-    cache_key = text
+    cache_key = f"{st.session_state.session_id}_{text}"
     if cache_key in st.session_state.embeddings_cache:
         return st.session_state.embeddings_cache[cache_key]
     
@@ -201,7 +217,7 @@ def get_embeddings(text, provider="ollama"):
                 "https://api.openai.com/v1/embeddings",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {st.session_state.openai_key}"
+                    "Authorization": f"Bearer {st.session_state.api_keys['openai']}"
                 },
                 json={
                     "input": text,
@@ -218,7 +234,7 @@ def get_embeddings(text, provider="ollama"):
                 "https://api.jina.ai/v1/embeddings",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {st.session_state.jina_key}"
+                    "Authorization": f"Bearer {st.session_state.api_keys['jina']}"
                 },
                 json={
                     "model": st.session_state.selected_model,
@@ -770,13 +786,11 @@ with col3:
         api_key = st.text_input(
             "Klucz API:",
             type="password",
+            value=st.session_state.api_keys.get(provider),
             help=f"Wprowadź klucz API dla {provider.upper()}"
         )
         if api_key:
-            if provider == "openai":
-                st.session_state.openai_key = api_key
-            else:
-                st.session_state.jina_key = api_key
+            st.session_state.api_keys[provider] = api_key
     else:
         st.write("API: -")
 
@@ -891,7 +905,8 @@ if st.button("START"):
             if ref_crawled and reference_url in ref_crawled:
                 reference_text = ref_crawled[reference_url]
                 # Zapisz do pliku nadpisując poprzednią zawartość
-                with open("reference_text.txt", "w", encoding="utf-8") as f:
+                reference_file = f"reference_text_{st.session_state.session_id}.txt"
+                with open(reference_file, "w", encoding="utf-8") as f:
                     f.write(reference_text)
                 print(reference_text)
                 reference_embedding = get_averaged_embedding(reference_text, provider=provider)
@@ -1195,7 +1210,23 @@ if st.button("START"):
             st.success(f"Using cached results for {domain} with {len(results['embeddings'])} embeddings")
             # ... reszta wyświetlania wyników ...
 
+    # Czyszczenie po zakończeniu
+    def cleanup():
+        if os.path.exists(reference_file):
+            os.remove(reference_file)
+    atexit.register(cleanup)
+
 if st.sidebar.button("Wyczyść cache wyników"):
     st.session_state.analysis_results = {}
     st.success("Cache wyników został wyczyszczony")
+
+# Zamiast tego możemy dodać informację o aktualnej sesji
+st.sidebar.info(f"ID sesji: {st.session_state.session_id[:8]}...")
+
+if st.sidebar.button("Wyczyść klucze API"):
+    st.session_state.api_keys = {
+        'openai': None,
+        'jina': None
+    }
+    st.success("Klucze API zostały wyczyszczone!")
 
