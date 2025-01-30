@@ -17,7 +17,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from urllib.parse import urlparse
 from openai import OpenAI
 import tiktoken
-import pyhtml2md  # Nowy import
+from markdownify import MarkdownConverter as md
+
 
 
 async def process_result(result):
@@ -72,9 +73,10 @@ def count_tokens(text):
         print(f"Błąd podczas liczenia tokenów: {e}")
         return 0
 
+
 def crawl_url(url):
     """Crawluje pojedynczy URL używając BeautifulSoup."""
-    print(f"\nCrawling: {url}")
+    #print(f"\nCrawling: {url}")
     
     try:
         response = requests.get(
@@ -111,19 +113,16 @@ def crawl_url(url):
         # Wyciągamy cały HTML z body
         html_content = str(body)
         
-        # # Konfigurujemy konwerter markdown
-        # options = pyhtml2md.Options()
-        # options.splitLines = False  # Nie dzielimy na linie
+        # Konwertujemy HTML na Markdown
+        converter = md(heading_style='ATX', strip_document='STRIP')
+        markdown_content = converter.convert(html_content)
         
-        # # Konwertujemy HTML na Markdown
-        # converter = pyhtml2md.Converter(html_content, options)
-        # markdown_content = converter.convert()
+        # Czyścimy tekst z nadmiarowych białych znaków
+        markdown_content = ' '.join(markdown_content.split())  # Usuwa podwójne spacje i znaki nowej linii
         
-        # if not converter.ok():
-        #     print(f"[WARN] Markdown conversion had issues for {url}")
-        
-        print(f"[OK] Successfully processed {url} ({len(html_content)} chars)")
-        return response.status_code, html_content  # Zwracamy HTML zamiast markdown
+        #print(markdown_content)
+        print(f"[OK] Successfully processed {url} ({len(markdown_content)} chars)")
+        return response.status_code, markdown_content
         
     except Exception as e:
         print(f"[ERROR] Processing failed for {url}: {str(e)}")
@@ -173,21 +172,9 @@ def get_embeddings(text):
     # Sprawdzamy cache
     cache_key = text
     if cache_key in st.session_state.embeddings_cache:
-        #print(f"Używam embeddingu z cache dla tekstu: {text[:25]}...")
         return st.session_state.embeddings_cache[cache_key]
     
     try:
-        # Debugowanie stanu modelu
-        print(f"Aktualny model w sesji: {st.session_state.selected_model}")
-        print(f"Model w cache: {st.session_state.model_cache}")
-        
-        if not st.session_state.selected_model:
-            if st.session_state.model_cache:  # Próbujemy użyć modelu z cache
-                st.session_state.selected_model = st.session_state.model_cache
-            else:
-                st.error("Nie wybrano modelu! Proszę kliknąć 'Pobierz modele' i wybrać model.")
-                return None
-            
         response = requests.post(
             f"{st.session_state.host.rstrip('/')}/api/embed",
             json={
@@ -652,6 +639,47 @@ def get_radius_interpretation(radius):
     else:
         return "🔴 Duże rozproszenie - treści są bardzo zróżnicowane"
 
+def split_into_chunks(text, max_tokens=500, overlap=50):
+    """Dzieli tekst na chunki o maksymalnej liczbie tokenów z zachowaniem kontekstu."""
+    enc = tiktoken.get_encoding("cl100k_base")
+    tokens = enc.encode(text)
+    chunks = []
+    
+    # Iterujemy z krokiem (max_tokens - 2*overlap) aby mieć nakładanie się z obu stron
+    for i in range(0, len(tokens), max_tokens - 2*overlap):
+        # Bierzemy poprzednie overlap tokenów (jeśli są)
+        start = max(0, i - overlap)
+        # Bierzemy następne overlap tokenów (jeśli są)
+        end = min(len(tokens), i + max_tokens - overlap)
+        
+        chunk = tokens[start:end]
+        if chunk:
+            chunks.append(enc.decode(chunk))
+    
+    return chunks
+
+def get_averaged_embedding(text):
+    """Generuje uśredniony embedding z chunków tekstu."""
+    chunks = split_into_chunks(text)
+    print(f"[CHUNKS] Podzielono tekst na {len(chunks)} chunków")
+    chunk_embeddings = []
+    
+    for i, chunk in enumerate(chunks, 1):
+        print(f"[CHUNK {i}/{len(chunks)}] Generuję embedding...")
+        embedding = get_embeddings(chunk)
+        if embedding is not None:
+            chunk_embeddings.append(embedding)
+    
+    if not chunk_embeddings:
+        return None
+        
+    # Obliczamy średnią z wszystkich embeddingów
+    averaged_embedding = np.mean(chunk_embeddings, axis=0)
+    # Normalizujemy wynikowy wektor
+    averaged_embedding = averaged_embedding / np.linalg.norm(averaged_embedding)
+    
+    return averaged_embedding
+
 # Streamlit Interface
 st.title("SiteFocus Tool (Ollama API Version)")
 
@@ -816,6 +844,14 @@ st.markdown("""
 
 
 if st.button("START"):
+    # Sprawdzamy model na początku
+    if not st.session_state.selected_model:
+        if st.session_state.model_cache:
+            st.session_state.selected_model = st.session_state.model_cache
+        else:
+            st.error("Nie wybrano modelu! Proszę kliknąć 'Pobierz modele' i wybrać model.")
+            st.stop()
+
     if domains:
         # Najpierw crawlujemy URL referencyjny (jeśli podany)
         if reference_url:
@@ -826,7 +862,7 @@ if st.button("START"):
                 with open("reference_text.txt", "w", encoding="utf-8") as f:
                     f.write(reference_text)
                 print(reference_text)
-                reference_embedding = get_embeddings(reference_text)
+                reference_embedding = get_averaged_embedding(reference_text)
                 if reference_embedding is not None:
                     reference_embedding = reference_embedding / norm(reference_embedding)
                     st.success("Pomyślnie wygenerowano embedding dla URL referencyjnego")
@@ -868,14 +904,13 @@ if st.button("START"):
                 
                 # Generowanie embeddingów
                 embeddings = []
-                valid_urls = []  # Resetujemy listę, bo będziemy dodawać tylko te z udanymi embeddingami
+                valid_urls = []  # Resetujemy listę
 
                 for url, text in crawled_pages.items():
-                    print(f"sGeneruję embedding dla URL: {url}")
-                    embedding = get_embeddings(text)  # Używamy pobranej treści
+                    print(f"Generuję embedding dla URL: {url}")
+                    embedding = get_averaged_embedding(text)  # Używamy nowej funkcji
                     if embedding is not None:
-                        normalized_embedding = embedding / norm(embedding)
-                        embeddings.append(normalized_embedding)
+                        embeddings.append(embedding)
                         valid_urls.append(url)
                 
                 # Najpierw obliczamy wyniki
