@@ -167,33 +167,75 @@ if st.sidebar.button("Wyczyść cache embeddingów"):
     st.session_state.embeddings_cache = {}
     st.success("Cache został wyczyszczony!")
 
-def get_embeddings(text):
-    """Get embeddings using Ollama API with caching"""
-    # Sprawdzamy cache
+def get_embeddings(text, provider="ollama"):
+    """Get embeddings using selected provider."""
     cache_key = text
     if cache_key in st.session_state.embeddings_cache:
         return st.session_state.embeddings_cache[cache_key]
     
+    embedding = None
+    
     try:
-        response = requests.post(
-            f"{st.session_state.host.rstrip('/')}/api/embed",
-            json={
-                'model': st.session_state.selected_model,
-                'input': text
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
+        provider = provider.lower()
         
-        if 'embeddings' in data and len(data['embeddings']) > 0:
-            embedding = np.array(data['embeddings'][0])
+        if provider == "ollama":
+            response = requests.post(
+                f"{st.session_state.host.rstrip('/')}/api/embed",
+                json={
+                    'model': st.session_state.selected_model,
+                    'input': text
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            if 'embeddings' in data and len(data['embeddings']) > 0:
+                embedding = np.array(data['embeddings'][0])
+            
+        elif provider == "openai":
+            response = requests.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {st.session_state.openai_key}"
+                },
+                json={
+                    "input": text,
+                    "model": "text-embedding-3-small"
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            if 'data' in data and len(data['data']) > 0:
+                embedding = np.array(data['data'][0]['embedding'])
+        
+        elif provider == "jina":
+            response = requests.post(
+                "https://api.jina.ai/v1/embeddings",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {st.session_state.jina_key}"
+                },
+                json={
+                    "model": st.session_state.selected_model,
+                    "dimensions": 1024,
+                    "normalized": True,
+                    "embedding_type": "float",
+                    "input": [{"text": text}] if "clip" in st.session_state.selected_model else [text]
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            if 'data' in data and len(data['data']) > 0:
+                embedding = np.array(data['data'][0]['embedding'])
+        
+        if embedding is not None:
             st.session_state.embeddings_cache[cache_key] = embedding
             return embedding
-        else:
-            print(f"Błąd: Nieoczekiwana struktura odpowiedzi API: {data}")
-            return None
+            
+        return None
+        
     except Exception as e:
-        print(f"Błąd podczas generowania embeddingu: {e}")
+        print(f"[ERROR] {provider} API error: {str(e)}")
         return None
 
 def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False, processed_sitemaps=None, all_urls=None):
@@ -639,20 +681,21 @@ def get_radius_interpretation(radius):
     else:
         return "🔴 Duże rozproszenie - treści są bardzo zróżnicowane"
 
-def split_into_chunks(text, max_tokens=500, overlap=50):
-    """Dzieli tekst na chunki o maksymalnej liczbie tokenów z zachowaniem kontekstu."""
+def split_into_chunks(text, provider="ollama", max_tokens=500, overlap=50):
+    """Dzieli tekst na chunki z różnymi limitami dla różnych dostawców."""
     enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
     total_tokens = len(tokens)
-    chunks = []
     
-    # Iterujemy z krokiem (max_tokens - 2*overlap) aby mieć nakładanie się z obu stron
+    # Ustawiamy limit tokenów w zależności od dostawcy
+    if provider == "openai" or provider == "jina":
+        max_tokens = 8000
+        overlap = 100  # Większy overlap dla większych chunków
+    
+    chunks = []
     for i in range(0, len(tokens), max_tokens - 2*overlap):
-        # Bierzemy poprzednie overlap tokenów (jeśli są)
         start = max(0, i - overlap)
-        # Bierzemy następne overlap tokenów (jeśli są)
         end = min(len(tokens), i + max_tokens - overlap)
-        
         chunk = tokens[start:end]
         if chunk:
             chunks.append(enc.decode(chunk))
@@ -660,24 +703,22 @@ def split_into_chunks(text, max_tokens=500, overlap=50):
     print(f"[TOKENS] Tekst zawiera {total_tokens} tokenów")
     return chunks
 
-def get_averaged_embedding(text):
+def get_averaged_embedding(text, provider="ollama"):
     """Generuje uśredniony embedding z chunków tekstu."""
-    chunks = split_into_chunks(text)
+    chunks = split_into_chunks(text, provider=provider)
     print(f"[CHUNKS] Podzielono tekst na {len(chunks)} chunków")
     chunk_embeddings = []
     
     for i, chunk in enumerate(chunks, 1):
         print(f"[CHUNK {i}/{len(chunks)}] Generuję embedding...")
-        embedding = get_embeddings(chunk)
+        embedding = get_embeddings(chunk, provider=provider)
         if embedding is not None:
             chunk_embeddings.append(embedding)
     
     if not chunk_embeddings:
         return None
         
-    # Obliczamy średnią z wszystkich embeddingów
     averaged_embedding = np.mean(chunk_embeddings, axis=0)
-    # Normalizujemy wynikowy wektor
     averaged_embedding = averaged_embedding / np.linalg.norm(averaged_embedding)
     
     return averaged_embedding
@@ -703,24 +744,34 @@ with col1:
         "Wybierz dostawcę:",
         options=["Ollama", "OpenAI", "Jina"],
         index=0,
-    )
+    ).lower()
 
 with col2:
-    if provider == "Ollama":
+    if provider == "ollama":
         st.session_state.host = st.text_input(
             "Host:",
             value="http://localhost:11434/",
-            help="http://localhost:11434/"
+            help="Domyślnie: http://localhost:11434/"
         )
-    else:
-        st.write("Endpoint: -")
+    elif provider == "openai":
+        st.session_state.host = "https://api.openai.com/v1/"
+        st.write(f"Endpoint: {st.session_state.host}")
+    elif provider == "jina":
+        st.session_state.host = "https://api.jina.ai/v1/"
+        st.write(f"Endpoint: {st.session_state.host}")
 
 with col3:
-    if provider in ["OpenAI", "Jina"]:
+    if provider in ["openai", "jina"]:
         api_key = st.text_input(
             "Klucz API:",
-            type="password"
+            type="password",
+            help=f"Wprowadź klucz API dla {provider.upper()}"
         )
+        if api_key:
+            if provider == "openai":
+                st.session_state.openai_key = api_key
+            else:
+                st.session_state.jina_key = api_key
     else:
         st.write("API: -")
 
@@ -728,17 +779,19 @@ with col3:
 if st.button("Pobierz modele"):
     print(f"\n--- Pobieranie modeli dla {provider} ---")
     
-    if provider == "Ollama":
+    # Reset poprzedniego wyboru modelu
+    st.session_state.selected_model = None
+    st.session_state.model_initialized = False
+    
+    if provider == "ollama":
         try:
-            host_url = st.session_state.host.rstrip('/')  # Używamy zapisanego hosta
+            host_url = st.session_state.host.rstrip('/')
             print(f"Próba połączenia z Ollama na URL: {host_url}")
             response = requests.get(f'{host_url}/api/tags')
             print(f"Status odpowiedzi: {response.status_code}")
             
             if response.status_code == 200:
                 models = response.json()
-                #print(f"Otrzymano odpowiedź: {models}")
-                
                 if models.get('models'):
                     st.session_state.model_list = [model['name'] for model in models['models']]
                     print(f"Znaleziono modele: {st.session_state.model_list}")
@@ -748,59 +801,28 @@ if st.button("Pobierz modele"):
                     print("Brak modeli w odpowiedzi")
                     st.info("Brak dostępnych modeli")
             else:
-                print(f"Błąd odpowiedzi: {response.text}")
                 st.error(f"Błąd podczas pobierania modeli: {response.status_code}")
-        except requests.exceptions.ConnectionError as e:
-            print(f"Błąd połączenia: {e}")
-            st.error(f"Nie można połączyć się z Ollama na URL: {host_url}")
         except Exception as e:
-            print(f"Nieoczekiwany błąd: {e}")
-            st.error(f"Wystąpił nieoczekiwany błąd: {str(e)}")
+            st.error(f"Błąd podczas pobierania modeli Ollama: {str(e)}")
             
-    elif provider == "OpenAI":
-        if not api_key:
-            print("Brak klucza API OpenAI")
+    elif provider == "openai":
+        if not st.session_state.get('openai_key'):
             st.error("Wprowadź klucz API OpenAI")
         else:
-            try:
-                print("Próba połączenia z OpenAI API")
-                headers = {"Authorization": f"Bearer {api_key}"}
-                response = requests.get('https://api.openai.com/v1/models', headers=headers)
-                print(f"Status odpowiedzi: {response.status_code}")
-                
-                if response.status_code == 200:
-                    models = response.json()
-                    print(f"Otrzymano odpowiedź: {models}")
-                    
-                    embedding_models = [model['id'] for model in models['data'] if 'embedding' in model['id']]
-                    if embedding_models:
-                        st.session_state.model_list = embedding_models
-                        print(f"Znaleziono modele do embeddingu: {embedding_models}")
-                        st.success("Pobrano listę modeli")
-                    else:
-                        print("Nie znaleziono modeli do embeddingu")
-                        st.info("Brak dostępnych modeli do embeddingów")
-                else:
-                    print(f"Błąd odpowiedzi: {response.text}")
-                    st.error(f"Błąd podczas pobierania modeli: {response.status_code}")
-            except Exception as e:
-                print(f"Nieoczekiwany błąd: {e}")
-                st.error(f"Wystąpił błąd: {str(e)}")
-    
-    elif provider == "Jina":
-        if not api_key:
-            print("Brak klucza API Jina")
+            st.session_state.model_list = ["text-embedding-3-small", "text-embedding-3-large"]
+            st.success("Pobrano listę modeli")
+            
+    elif provider == "jina":
+        if not st.session_state.get('jina_key'):
             st.error("Wprowadź klucz API Jina")
         else:
-            print("Ustawiam dostępne modele Jina")
-            st.session_state.model_list = ["jina-embeddings-v3", "jina-clip-v2"]
-            print(f"Dostępne modele Jina: {st.session_state.model_list}")
+            st.session_state.model_list = ["jina-clip-v2", "jina-embeddings-v3"]
             st.success("Pobrano listę modeli")
 
 # W miejscu gdzie wybieramy model
 if st.session_state.model_list:
-    if not st.session_state.model_initialized:
-        # Inicjalizujemy model tylko raz
+    if not st.session_state.model_initialized or st.session_state.selected_model not in st.session_state.model_list:
+        # Inicjalizujemy model tylko raz lub gdy poprzedni model nie jest dostępny
         st.session_state.selected_model = st.session_state.model_list[0]
         st.session_state.model_initialized = True
     
@@ -846,13 +868,16 @@ st.markdown("""
 
 
 if st.button("START"):
-    # Sprawdzamy model na początku
-    if not st.session_state.selected_model:
+    # Sprawdzamy konfigurację na początku
+    if provider == "Ollama" and not st.session_state.selected_model:
         if st.session_state.model_cache:
             st.session_state.selected_model = st.session_state.model_cache
         else:
             st.error("Nie wybrano modelu! Proszę kliknąć 'Pobierz modele' i wybrać model.")
             st.stop()
+    elif provider == "OpenAI" and not st.session_state.get('openai_key'):
+        st.error("Nie podano klucza API OpenAI!")
+        st.stop()
 
     if domains:
         # Najpierw crawlujemy URL referencyjny (jeśli podany)
@@ -864,7 +889,7 @@ if st.button("START"):
                 with open("reference_text.txt", "w", encoding="utf-8") as f:
                     f.write(reference_text)
                 print(reference_text)
-                reference_embedding = get_averaged_embedding(reference_text)
+                reference_embedding = get_averaged_embedding(reference_text, provider=provider)
                 if reference_embedding is not None:
                     reference_embedding = reference_embedding / norm(reference_embedding)
                     st.success("Pomyślnie wygenerowano embedding dla URL referencyjnego")
@@ -910,7 +935,7 @@ if st.button("START"):
 
                 for url, text in crawled_pages.items():
                     print(f"Generuję embedding dla URL: {url}")
-                    embedding = get_averaged_embedding(text)  # Używamy nowej funkcji
+                    embedding = get_averaged_embedding(text, provider=provider)
                     if embedding is not None:
                         embeddings.append(embedding)
                         valid_urls.append(url)

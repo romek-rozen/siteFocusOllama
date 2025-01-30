@@ -1,7 +1,23 @@
-venv/
-env/
-__pycache__/
+# Virtual environment
 myenv/
-.cfg
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Local files
 reference_text.txt
+
+# IDE files
+.vscode/
+.idea/
+
+# Cache files
+*.cache
+
+.cfg
 htmltomarkdown.py
