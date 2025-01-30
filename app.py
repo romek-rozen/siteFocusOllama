@@ -447,37 +447,44 @@ def clean_text_from_url(url, domain):
     text = text.replace("/", " ").replace("_", " ").replace("-", " ")
     return text.strip()
 
-def calculate_site_focus_and_radius(embeddings):
-    """Oblicza Site Focus Score, Site Radius i odległości od centroidu."""
-    # Obliczamy centroid (średni punkt wszystkich embeddingów)
-    centroid = np.mean(embeddings, axis=0)
-    # Normalizujemy centroid
-    centroid = centroid / np.linalg.norm(centroid)
+def calculate_site_focus_and_radius(embeddings, reference_embedding=None):
+    """Oblicza Site Focus Score i Site Radius względem reference_embedding lub centroidu."""
+    if reference_embedding is not None:
+        # Używamy reference_embedding jako punktu odniesienia
+        site_embedding = reference_embedding
+    else:
+        # Obliczamy centroid jako site_embedding
+        site_embedding = np.mean(embeddings, axis=0)
+        site_embedding = site_embedding / np.linalg.norm(site_embedding)
     
-    # Obliczamy odległości używając cosine_similarity
+    # Obliczamy odległości od punktu odniesienia
     deviations = []
+    similarities = []
     for embedding in embeddings:
         # Normalizujemy embedding
         embedding_normalized = embedding / np.linalg.norm(embedding)
         # Obliczamy podobieństwo cosinusowe
         similarity = cosine_similarity(
-            centroid.reshape(1, -1), 
+            site_embedding.reshape(1, -1), 
             embedding_normalized.reshape(1, -1)
         )[0][0]
+        similarities.append(similarity)
         # Zamieniamy na odległość
         distance = 1 - similarity
         deviations.append(distance)
     
-    # Konwertujemy na numpy array
     deviations = np.array(deviations)
+    similarities = np.array(similarities)
     
-    # Site Radius to średnia odległość od centroidu
+    # Site Radius - średnia odległość od punktu odniesienia
     site_radius = np.mean(deviations)
     
-    # Site Focus Score to 1 minus znormalizowany Site Radius
-    site_focus_score = max(0, 1 - site_radius)  # zabezpieczenie przed ujemnymi wartościami
+    # Site Focus Score - miara skupienia na temacie reference URL
+    mean_similarity = np.mean(similarities)
+    similarity_variance = np.var(similarities)
+    site_focus_score = mean_similarity * (1 - similarity_variance)
     
-    return site_focus_score, site_radius, centroid, deviations
+    return site_focus_score, site_radius, site_embedding, deviations
 
 def plot_gradient_strip_with_indicator(score, title):
     """Visualize the score as a gradient strip with an indicator."""
@@ -1071,8 +1078,15 @@ if st.button("START"):
                     st.success(f"Successfully generated {len(embeddings)} embeddings with model {st.session_state.selected_model}")
                     
                     # Najpierw obliczamy wyniki
-                    embeddings = np.array(embeddings)
-                    site_focus_score, site_radius, centroid, deviations = calculate_site_focus_and_radius(embeddings)
+                    if reference_embedding is not None:
+                        site_focus_score, site_radius, site_embedding, deviations = calculate_site_focus_and_radius(
+                            embeddings, 
+                            reference_embedding=reference_embedding
+                        )
+                    else:
+                        site_focus_score, site_radius, site_embedding, deviations = calculate_site_focus_and_radius(
+                            embeddings
+                        )
                     
                     # Potem zapisujemy do cache
                     st.session_state.analysis_results[domain] = {
@@ -1080,7 +1094,7 @@ if st.button("START"):
                         'valid_urls': valid_urls,
                         'site_focus_score': site_focus_score,
                         'site_radius': site_radius,
-                        'centroid': centroid,
+                        'centroid': site_embedding,
                         'deviations': deviations
                     }
                     
@@ -1170,7 +1184,7 @@ if st.button("START"):
                     
                     # Dodajemy 2D t-SNE visualization
                     st.subheader("2D t-SNE Projection")
-                    plot_2d_tsne(embeddings, valid_urls, centroid, deviations)
+                    plot_2d_tsne(embeddings, valid_urls, site_embedding, deviations)
                     
                     # Jeśli mamy URL referencyjny, dodajemy podsumowanie najbliższych stron
                     if reference_embedding is not None:
@@ -1216,7 +1230,7 @@ if st.button("START"):
                     # Wizualizacje 3D
                     st.header("🌐 Wizualizacje 3D")
                     st.subheader("3D t-SNE Projection")
-                    plot_3d_tsne(embeddings, valid_urls, centroid, deviations)
+                    plot_3d_tsne(embeddings, valid_urls, site_embedding, deviations)
                     
                     st.subheader("Spherical Distance Plot")
                     plot_spherical_distances_optimized(deviations, embeddings, valid_urls)
