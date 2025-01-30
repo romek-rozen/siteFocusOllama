@@ -825,14 +825,14 @@ if st.button("Pobierz modele"):
             st.error(f"Błąd podczas pobierania modeli Ollama: {str(e)}")
             
     elif provider == "openai":
-        if not st.session_state.get('openai_key'):
+        if not st.session_state.api_keys.get('openai'):
             st.error("Wprowadź klucz API OpenAI")
         else:
             st.session_state.model_list = ["text-embedding-3-small", "text-embedding-3-large"]
             st.success("Pobrano listę modeli")
             
     elif provider == "jina":
-        if not st.session_state.get('jina_key'):
+        if not st.session_state.api_keys.get('jina'):
             st.error("Wprowadź klucz API Jina")
         else:
             st.session_state.model_list = ["jina-clip-v2", "jina-embeddings-v3"]
@@ -888,14 +888,17 @@ st.markdown("""
 
 if st.button("START"):
     # Sprawdzamy konfigurację na początku
-    if provider == "Ollama" and not st.session_state.selected_model:
+    if provider == "ollama" and not st.session_state.selected_model:
         if st.session_state.model_cache:
             st.session_state.selected_model = st.session_state.model_cache
         else:
             st.error("Nie wybrano modelu! Proszę kliknąć 'Pobierz modele' i wybrać model.")
             st.stop()
-    elif provider == "OpenAI" and not st.session_state.get('openai_key'):
+    elif provider == "openai" and not st.session_state.api_keys.get('openai'):
         st.error("Nie podano klucza API OpenAI!")
+        st.stop()
+    elif provider == "jina" and not st.session_state.api_keys.get('jina'):
+        st.error("Nie podano klucza API Jina!")
         st.stop()
 
     if domains:
