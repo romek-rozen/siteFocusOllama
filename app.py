@@ -643,6 +643,7 @@ def split_into_chunks(text, max_tokens=500, overlap=50):
     """Dzieli tekst na chunki o maksymalnej liczbie tokenów z zachowaniem kontekstu."""
     enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
+    total_tokens = len(tokens)
     chunks = []
     
     # Iterujemy z krokiem (max_tokens - 2*overlap) aby mieć nakładanie się z obu stron
@@ -656,6 +657,7 @@ def split_into_chunks(text, max_tokens=500, overlap=50):
         if chunk:
             chunks.append(enc.decode(chunk))
     
+    print(f"[TOKENS] Tekst zawiera {total_tokens} tokenów")
     return chunks
 
 def get_averaged_embedding(text):
