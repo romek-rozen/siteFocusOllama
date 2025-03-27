@@ -204,7 +204,7 @@ def crawl_url(url):
         # Konwertujemy HTML na Markdown z dodatkowymi opcjami
         converter = md(
             heading_style='ATX',
-            strip_document='STRIP',
+            #strip_document='STRIP',
             wrap=True,  # Zawijanie tekstu
             wrap_width=80,  # Szerokość zawijania
             newline_style='SPACES',  # Używaj spacji zamiast \n
