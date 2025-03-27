@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 # Dla równoległego przetwarzania
-executor = ThreadPoolExecutor(max_workers=5)  # Limit równoległych requestów
+executor = ThreadPoolExecutor(max_workers=1)  # Limit równoległych requestów
 
 async def process_result(result):
     """Przetwarza pojedynczy wynik crawlowania."""
@@ -48,6 +48,23 @@ if 'crawl_cache' not in st.session_state:
 if 'url_status_cache' not in st.session_state:
     st.session_state.url_status_cache = {}
 
+# Dodajemy zmienne do śledzenia postępu
+if 'crawl_progress' not in st.session_state:
+    st.session_state.crawl_progress = {
+        'total': 0,
+        'completed': 0,
+        'status': '',
+        'current_domain': ''
+    }
+
+if 'embedding_progress' not in st.session_state:
+    st.session_state.embedding_progress = {
+        'total': 0,
+        'completed': 0,
+        'status': '',
+        'current_url': ''
+    }
+
 if 'model_list' not in st.session_state:
     st.session_state.model_list = []
 if 'selected_model' not in st.session_state:
@@ -58,6 +75,17 @@ if 'model_initialized' not in st.session_state:  # Nowa flaga
     st.session_state.model_initialized = False
 if 'analysis_results' not in st.session_state:  # Dodajemy cache dla wyników
     st.session_state.analysis_results = {}
+
+# Inicjalizacja kontenerów dla pasków postępu
+if 'progress_containers' not in st.session_state:
+    st.session_state.progress_containers = {
+        'crawl_progress': None,
+        'crawl_status': None,
+        'embedding_progress': None,
+        'embedding_status': None,
+        'chunk_progress': None,
+        'chunk_status': None
+    }
 
 # Dodajmy przycisk do czyszczenia cache crawla obok przycisku czyszczenia cache embeddingów
 if st.sidebar.button("Wyczyść cache crawla"):
@@ -133,7 +161,7 @@ def crawl_url(url):
         # Najpierw usuwamy tylko najbardziej oczywiste elementy
         elements_to_remove = [
             'script', 'style', 'noscript', 'iframe',  # Elementy techniczne
-            'footer',  # Stopka
+            'head', 'header', 'nav', 'footer',  # Elementy strukturalne
             'img',    # Obrazki
             'svg',    # SVG grafiki
             'picture', # Responsywne obrazki
@@ -204,18 +232,43 @@ def crawl_url(url):
         
         # Konwertujemy HTML na Markdown z dodatkowymi opcjami
         converter = md(
-            heading_style='ATX',
-            #strip_document='STRIP',
-            wrap=True,  # Zawijanie tekstu
-            wrap_width=80,  # Szerokość zawijania
-            newline_style='SPACES',  # Używaj spacji zamiast \n
-            escape_asterisks=True,  # Escapuj gwiazdki
-            escape_underscores=True  # Escapuj podkreślenia
+            heading_style="ATX",
+            #strip_document="STRIP",  # Włączamy strip_document dla usunięcia zbędnych elementów
+            #wrap=True,  # Zawijanie tekstu
+            #wrap_width=80,  # Szerokość zawijania
+            #newline_style="SPACES",  # Używaj spacji zamiast \n
+            #escape_asterisks=True,  # Escapuj gwiazdki
+            #escape_underscores=True  # Escapuj podkreślenia
         )
         markdown_content = converter.convert(html_content)
         
-        # Czyścimy tekst
+        # Bardziej agresywne czyszczenie tekstu
+        # Usuwamy nadmiarowe białe znaki
         markdown_content = ' '.join(markdown_content.split())
+        
+        # Usuwamy powtarzające się znaki interpunkcyjne
+        markdown_content = re.sub(r'([.,!?])\1+', r'\1', markdown_content)
+        
+        # Usuwamy zbędne znaki markdown, które mogą zwiększać liczbę tokenów
+        markdown_content = re.sub(r'[\*\_\~\`]{2,}', ' ', markdown_content)
+        
+        # Usuwamy linie zawierające tylko znaki specjalne lub krótkie frazy
+        markdown_content = re.sub(r'\b\w{1,2}\b', ' ', markdown_content)
+        
+        # Usuwamy nadmiarowe spacje po czyszczeniu
+        markdown_content = re.sub(r'\s+', ' ', markdown_content).strip()
+        
+        # Usuwamy typowe elementy stopki, które mogą pozostać
+        footer_patterns = [
+            r'copyright [\d-]+',
+            r'all rights reserved',
+            r'terms (of|and) conditions',
+            r'privacy policy',
+            r'cookie policy'
+        ]
+        for pattern in footer_patterns:
+            markdown_content = re.sub(pattern, '', markdown_content, flags=re.IGNORECASE)
+        
         #print(markdown_content)
         
         return response.status_code, markdown_content
@@ -229,14 +282,50 @@ def crawl_urls(urls):
     crawled_pages = {}
     total_tokens = 0
     
+    # Inicjalizujemy postęp crawlowania
+    st.session_state.crawl_progress['total'] = len(urls)
+    st.session_state.crawl_progress['completed'] = 0
+    st.session_state.crawl_progress['status'] = 'Rozpoczynam crawlowanie stron...'
+    
+    # Używamy kontenerów z session_state lub tworzymy nowe jeśli nie istnieją
+    if st.session_state.progress_containers['crawl_progress'] is None:
+        st.session_state.progress_containers['crawl_progress'] = st.empty()
+    if st.session_state.progress_containers['crawl_status'] is None:
+        st.session_state.progress_containers['crawl_status'] = st.empty()
+    
+    progress_container = st.session_state.progress_containers['crawl_progress']
+    status_container = st.session_state.progress_containers['crawl_status']
+    
+    # Wyświetlamy początkowy pasek postępu
+    progress_bar = progress_container.progress(0)
+    status_container.info(st.session_state.crawl_progress['status'])
+    
     # Najpierw sprawdzamy cache
-    for url in urls:
+    for i, url in enumerate(urls):
+        # Aktualizujemy status
+        st.session_state.crawl_progress['status'] = f"Przetwarzanie: {url}"
+        update_progress(
+            progress_container,
+            status_container,
+            st.session_state.crawl_progress['completed'] / st.session_state.crawl_progress['total'],
+            st.session_state.crawl_progress['status']
+        )
+        
         if url in st.session_state.crawl_cache:
             text = st.session_state.crawl_cache[url]
             num_tokens = count_tokens(text)
             total_tokens += num_tokens
             print(f"[CACHE] Using cached content for {url} ({num_tokens} tokens)")
             crawled_pages[url] = text
+            
+            # Aktualizujemy postęp
+            st.session_state.crawl_progress['completed'] += 1
+            update_progress(
+                progress_container,
+                status_container,
+                st.session_state.crawl_progress['completed'] / st.session_state.crawl_progress['total'],
+                st.session_state.crawl_progress['status']
+            )
             continue
             
         print(f"Crawling: {url}")
@@ -250,6 +339,25 @@ def crawl_urls(urls):
             print(f"[OK] {url} - {len(text)} chars, {num_tokens} tokens")
         else:
             print(f"[SKIP] {url} => Status code: {status_code}")
+        
+        # Aktualizujemy postęp
+        st.session_state.crawl_progress['completed'] += 1
+        update_progress(
+            progress_container,
+            status_container,
+            st.session_state.crawl_progress['completed'] / st.session_state.crawl_progress['total'],
+            st.session_state.crawl_progress['status']
+        )
+    
+    # Aktualizujemy status końcowy
+    st.session_state.crawl_progress['status'] = f"Zakończono crawlowanie: {len(crawled_pages)} stron z {len(urls)}"
+    update_progress(
+        progress_container,
+        status_container,
+        1.0,  # 100% complete
+        st.session_state.crawl_progress['status'],
+        success=True
+    )
     
     print(f"\nSuccessfully crawled {len(crawled_pages)} pages with status 200 (from {len(urls)} total URLs)")
     print(f"Total tokens: {total_tokens}")
@@ -265,14 +373,32 @@ if 'session_id' not in st.session_state:
 
 if st.sidebar.button("Wyczyść cache embeddingów"):
     st.session_state.embeddings_cache = {}
+    # Reset progress containers to avoid state inconsistencies
+    st.session_state.progress_containers = {
+        'crawl_progress': None,
+        'crawl_status': None,
+        'embedding_progress': None,
+        'embedding_status': None,
+        'chunk_progress': None,
+        'chunk_status': None
+    }
+    # Reset embedding progress
+    st.session_state.embedding_progress = {
+        'total': 0,
+        'completed': 0,
+        'status': '',
+        'current_url': ''
+    }
     st.success("Cache został wyczyszczony!")
 
 def get_embeddings(text, provider="ollama"):
     """Get embeddings using selected provider."""
+    start_time = time.time()
     cache_key = f"{st.session_state.session_id}_{text}"
+    
+    # Check cache
     if cache_key in st.session_state.embeddings_cache:
         return st.session_state.embeddings_cache[cache_key]
-    
     embedding = None
     max_retries = 3
     retry_delay = 2  # sekundy
@@ -283,6 +409,7 @@ def get_embeddings(text, provider="ollama"):
         if provider == "ollama":
             for attempt in range(max_retries):
                 try:
+                    request_start = time.time()
                     response = requests.post(
                         f"{st.session_state.host.rstrip('/')}/api/embed",
                         json={
@@ -290,11 +417,19 @@ def get_embeddings(text, provider="ollama"):
                             'input': text
                         }
                     )
+                    request_time = time.time() - request_start
                     response.raise_for_status()
-                    data = response.json()
-                    if 'embeddings' in data and len(data['embeddings']) > 0:
+                    data = response.json()                 
+                    # Check for 'embedding' (singular) which is the correct key in Ollama API
+                    if 'embedding' in data:
+                        embedding = np.array(data['embedding'])
+                        break
+                    # Also check for 'embeddings' (plural) as a fallback
+                    elif 'embeddings' in data and len(data['embeddings']) > 0:
                         embedding = np.array(data['embeddings'][0])
                         break
+                    else:
+                        print(f"[ERROR] No embedding found in Ollama response. Keys: {list(data.keys())}")
                 except Exception as e:
                     error_type = type(e).__name__
                     error_msg = str(e)
@@ -310,6 +445,7 @@ def get_embeddings(text, provider="ollama"):
                     raise  # Re-raise the last exception if all retries failed
             
         elif provider == "openai":
+            request_start = time.time()
             response = requests.post(
                 "https://api.openai.com/v1/embeddings",
                 headers={
@@ -318,15 +454,19 @@ def get_embeddings(text, provider="ollama"):
                 },
                 json={
                     "input": text,
-                    "model": "text-embedding-3-small"
+                    "model": st.session_state.selected_model
                 }
             )
+            request_time = time.time() - request_start
             response.raise_for_status()
             data = response.json()
+            
+            
             if 'data' in data and len(data['data']) > 0:
                 embedding = np.array(data['data'][0]['embedding'])
         
         elif provider == "jina":
+            request_start = time.time()
             response = requests.post(
                 "https://api.jina.ai/v1/embeddings",
                 headers={
@@ -341,14 +481,17 @@ def get_embeddings(text, provider="ollama"):
                     "input": [{"text": text}] if "clip" in st.session_state.selected_model else [text]
                 }
             )
+            request_time = time.time() - request_start
             response.raise_for_status()
             data = response.json()
+            
             if 'data' in data and len(data['data']) > 0:
                 embedding = np.array(data['data'][0]['embedding'])
         
         elif provider == "cohere":
             for attempt in range(max_retries):
                 try:
+                    request_start = time.time()
                     response = requests.post(
                         "https://api.cohere.com/v2/embed",
                         headers={
@@ -359,32 +502,27 @@ def get_embeddings(text, provider="ollama"):
                             "model": st.session_state.selected_model,
                             "texts": [text],
                             "input_type": "search_document",
-                            "embedding_types": ["float"]
+                            "embedding_types": ["float"]  # Adding the required parameter
                         }
                     )
+                    request_time = time.time() - request_start
+                    
                     response.raise_for_status()
                     data = response.json()
                     
                     # Debug: Print the full response structure
-                    print(f"[DEBUG] Cohere API response structure: {list(data.keys())}")
+                    #print(f"[DEBUG] Cohere API response structure: {list(data.keys())}")
                     
                     # Check if 'embeddings' exists
                     if 'embeddings' in data:
-                        print(f"[DEBUG] Embeddings type: {type(data['embeddings'])}")
+                        #print(f"[DEBUG] Embeddings type: {type(data['embeddings'])}")
                         
-                        # Handle case where embeddings is a dictionary (Cohere v2 API format)
-                        if isinstance(data['embeddings'], dict):
-                            # Check if the dictionary contains the embedding values
-                            if 'float' in data['embeddings']:
-                                embedding = np.array(data['embeddings']['float'])
-                                break
-                            else:
-                                print(f"[ERROR] Embeddings dictionary does not contain 'float' key. Available keys: {list(data['embeddings'].keys())}")
-                                print(f"[DEBUG] Full embeddings content: {data['embeddings']}")
-                        # Handle case where embeddings is a list (older API format)
+                        # Handle case where embeddings is a dictionary with 'float' key (Cohere format)
+                        if isinstance(data['embeddings'], dict) and 'float' in data['embeddings'] and len(data['embeddings']['float']) > 0:
+                            embedding = np.array(data['embeddings']['float'][0])
+                        # Handle case where embeddings is a list (standard format)
                         elif isinstance(data['embeddings'], list) and len(data['embeddings']) > 0:
                             embedding = np.array(data['embeddings'][0])
-                            break
                         else:
                             print(f"[ERROR] Embeddings field has unexpected format: {type(data['embeddings'])}")
                     else:
@@ -406,10 +544,11 @@ def get_embeddings(text, provider="ollama"):
                     raise  # Re-raise the last exception if all retries failed
         
         if embedding is not None:
+            # Cache the result
             st.session_state.embeddings_cache[cache_key] = embedding
+            # Calculate total time
+            total_time = time.time() - start_time
             return embedding
-            
-        return None
         
     except Exception as e:
         error_type = type(e).__name__
@@ -419,6 +558,9 @@ def get_embeddings(text, provider="ollama"):
         if hasattr(e, 'response') and e.response is not None:
             print(f"[ERROR] Response status: {e.response.status_code}")
             print(f"[ERROR] Response content: {e.response.text}")
+        
+        total_time = time.time() - start_time
+        
         return None
 
 def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False, processed_sitemaps=None, all_urls=None):
@@ -569,23 +711,165 @@ def plot_gradient_strip_with_indicator(score, title):
     plt.title(f"{title}: {score * 100:.2f}%")
     st.pyplot(plt)
 
-def plot_3d_tsne(embeddings, urls, centroid, deviations):
+def plot_3d_tsne(embeddings, urls, centroid, deviations, normalize=True):
     """Interactive 3D t-SNE scatter plot with hover labels."""
-    # Sprawdzamy i dostosowujemy wymiary
-    print(f"[DEBUG] Embeddings shape for 3D: {np.array(embeddings).shape}")
-    print(f"[DEBUG] Centroid shape for 3D: {np.array(centroid).shape}")
-    
-    # Upewniamy się, że embeddings ma 2 wymiary
+    # Wywołujemy wszystkie trzy rozwiązania, jedno po drugim
+    plot_3d_tsne_solution1(embeddings, urls, centroid, deviations, normalize)
+    plot_3d_tsne_solution2(embeddings, urls, centroid, deviations, normalize)
+    #plot_3d_tsne_solution3(embeddings, urls, centroid, deviations, normalize)
+
+def plot_3d_tsne_solution1(embeddings, urls, centroid, deviations, normalize=True):
+    """
+    Rozwiązanie 1: Centroid jako średnia punktów po transformacji t-SNE.
+    Najpierw wykonujemy t-SNE na danych, a następnie obliczamy centroid w przestrzeni 3D.
+    """
+    # Konwertujemy do numpy array jeśli nie jest
     embeddings_array = np.array(embeddings)
-    if len(embeddings_array.shape) == 3:
-        # Jeśli embeddings ma 3 wymiary (n, d, 1), przekształcamy do (n, d)
-        embeddings_array = embeddings_array.squeeze(axis=2)
     
-    # Upewniamy się, że centroid ma 2 wymiary
+    print(f"[DEBUG] Embeddings shape for 3D (Solution 1): {embeddings_array.shape}")
+    
+    # Obsługa różnych kształtów embeddings
+    if len(embeddings_array.shape) == 3:
+        embeddings_array = embeddings_array.reshape(embeddings_array.shape[0], -1)
+    
+    # Opcjonalna normalizacja
+    if normalize:
+        # Normalizacja L2 embeddings
+        norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
+        embeddings_array = embeddings_array / norms
+    
+    # Wykonujemy t-SNE tylko na danych (bez centroidu)
+    tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(embeddings) - 1))
+    tsne_results = tsne.fit_transform(embeddings_array)
+    
+    # Obliczamy centroid w przestrzeni 3D jako średnią punktów po transformacji
+    centroid_tsne = np.mean(tsne_results, axis=0)
+
+    fig = px.scatter_3d(
+        x=tsne_results[:, 0],
+        y=tsne_results[:, 1],
+        z=tsne_results[:, 2],
+        color=deviations,
+        color_continuous_scale="RdYlGn_r",
+        hover_name=urls,
+        labels={"color": "Deviation"},
+        title="Rozwiązanie 1: Centroid jako średnia punktów po transformacji t-SNE"
+    )
+    fig.add_scatter3d(
+        x=[centroid_tsne[0]],
+        y=[centroid_tsne[1]],
+        z=[centroid_tsne[2]],
+        mode="markers",
+        marker=dict(
+            color='blue',
+            symbol='diamond',
+            size=20
+        ),
+        name="Centroid (średnia po t-SNE)"
+    )
+    st.plotly_chart(fig)
+
+def plot_3d_tsne_solution2(embeddings, urls, centroid, deviations, normalize=True):
+    """
+    Rozwiązanie 2: Użycie PCA zamiast t-SNE.
+    PCA lepiej zachowuje globalne relacje odległości.
+    """
+    from sklearn.decomposition import PCA
+    
+    # Konwertujemy do numpy array jeśli nie jest
+    embeddings_array = np.array(embeddings)
     centroid_array = np.array(centroid)
+    
+    print(f"[DEBUG] Embeddings shape for 3D (Solution 2): {embeddings_array.shape}")
+    print(f"[DEBUG] Centroid shape for 3D (Solution 2): {centroid_array.shape}")
+    
+    # Obsługa różnych kształtów embeddings
+    if len(embeddings_array.shape) == 3:
+        embeddings_array = embeddings_array.reshape(embeddings_array.shape[0], -1)
+    
+    # Obsługa różnych kształtów centroidu
     if len(centroid_array.shape) == 1:
-        # Jeśli centroid ma 1 wymiar (d,), przekształcamy do (1, d)
         centroid_array = centroid_array.reshape(1, -1)
+    elif len(centroid_array.shape) == 3:
+        centroid_array = centroid_array.reshape(centroid_array.shape[0], -1)
+    
+    # Opcjonalna normalizacja
+    if normalize:
+        # Normalizacja L2 embeddings
+        norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
+        embeddings_array = embeddings_array / norms
+        
+        # Normalizacja L2 centroidu
+        centroid_norm = np.linalg.norm(centroid_array, axis=1, keepdims=True)
+        centroid_array = centroid_array / centroid_norm
+    
+    # Łączymy dane z centroidem
+    all_data = np.vstack([embeddings_array, centroid_array])
+    
+    # Wykonujemy PCA
+    pca = PCA(n_components=3)
+    pca_results = pca.fit_transform(all_data)
+    
+    # Oddzielamy wyniki dla danych i centroidu
+    data_pca = pca_results[:-1]
+    centroid_pca = pca_results[-1]
+
+    fig = px.scatter_3d(
+        x=data_pca[:, 0],
+        y=data_pca[:, 1],
+        z=data_pca[:, 2],
+        color=deviations,
+        color_continuous_scale="RdYlGn_r",
+        hover_name=urls,
+        labels={"color": "Deviation"},
+        title="Rozwiązanie 2: Użycie PCA zamiast t-SNE"
+    )
+    fig.add_scatter3d(
+        x=[centroid_pca[0]],
+        y=[centroid_pca[1]],
+        z=[centroid_pca[2]],
+        mode="markers",
+        marker=dict(
+            color='blue',
+            symbol='diamond',
+            size=20
+        ),
+        name="Centroid (PCA)"
+    )
+    st.plotly_chart(fig)
+
+def plot_3d_tsne_solution3(embeddings, urls, centroid, deviations, normalize=True):
+    """
+    Rozwiązanie 3: Wizualizacja t-SNE z oryginalnym podejściem.
+    Używamy t-SNE do wizualizacji, dodając centroid do danych przed transformacją.
+    """
+    # Konwertujemy do numpy array jeśli nie jest
+    embeddings_array = np.array(embeddings)
+    centroid_array = np.array(centroid)
+    
+    print(f"[DEBUG] Embeddings shape for 3D (Solution 3): {embeddings_array.shape}")
+    print(f"[DEBUG] Centroid shape for 3D (Solution 3): {centroid_array.shape}")
+    
+    # Obsługa różnych kształtów embeddings
+    if len(embeddings_array.shape) == 3:
+        # Jeśli mamy kształt (n, 1, d) lub (n, d, 1)
+        embeddings_array = embeddings_array.reshape(embeddings_array.shape[0], -1)
+    
+    # Obsługa różnych kształtów centroidu
+    if len(centroid_array.shape) == 1:
+        centroid_array = centroid_array.reshape(1, -1)
+    elif len(centroid_array.shape) == 3:
+        centroid_array = centroid_array.reshape(centroid_array.shape[0], -1)
+    
+    # Opcjonalna normalizacja
+    if normalize:
+        # Normalizacja L2 embeddings
+        norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
+        embeddings_array = embeddings_array / norms
+        
+        # Normalizacja L2 centroidu
+        centroid_norm = np.linalg.norm(centroid_array, axis=1, keepdims=True)
+        centroid_array = centroid_array / centroid_norm
     
     # Wykonujemy t-SNE
     tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(embeddings) - 1))
@@ -601,15 +885,19 @@ def plot_3d_tsne(embeddings, urls, centroid, deviations):
         color_continuous_scale="RdYlGn_r",
         hover_name=urls,
         labels={"color": "Deviation"},
-        title="3D t-SNE Projection of Page Embeddings"
+        title="Rozwiązanie 3: Oryginalne podejście (centroid dodany przed t-SNE)"
     )
     fig.add_scatter3d(
         x=[centroid_tsne[0]],
         y=[centroid_tsne[1]],
         z=[centroid_tsne[2]],
         mode="markers",
-        marker=dict(size=15, color="green"),
-        name="Centroid"
+        marker=dict(
+            color='blue',
+            symbol='diamond',
+            size=20
+        ),
+        name="Centroid (oryginalny)"
     )
     st.plotly_chart(fig)
 
@@ -833,23 +1121,35 @@ def plot_distance_distribution(deviations):
     # Wyświetlamy wykres
     st.plotly_chart(fig)
 
-def plot_2d_tsne(embeddings, urls, centroid, deviations):
+def plot_2d_tsne(embeddings, urls, centroid, deviations, normalize=True):
     """2D t-SNE scatter plot with hover labels."""
-    # Sprawdzamy i dostosowujemy wymiary
-    print(f"[DEBUG] Embeddings shape: {np.array(embeddings).shape}")
-    print(f"[DEBUG] Centroid shape: {np.array(centroid).shape}")
-    
-    # Upewniamy się, że embeddings ma 2 wymiary
+    # Konwertujemy do numpy array jeśli nie jest
     embeddings_array = np.array(embeddings)
-    if len(embeddings_array.shape) == 3:
-        # Jeśli embeddings ma 3 wymiary (n, d, 1), przekształcamy do (n, d)
-        embeddings_array = embeddings_array.squeeze(axis=2)
-    
-    # Upewniamy się, że centroid ma 2 wymiary
     centroid_array = np.array(centroid)
+    
+    print(f"[DEBUG] Embeddings shape: {embeddings_array.shape}")
+    print(f"[DEBUG] Centroid shape: {centroid_array.shape}")
+    
+    # Obsługa różnych kształtów embeddings
+    if len(embeddings_array.shape) == 3:
+        # Jeśli mamy kształt (n, 1, d) lub (n, d, 1)
+        embeddings_array = embeddings_array.reshape(embeddings_array.shape[0], -1)
+    
+    # Obsługa różnych kształtów centroidu
     if len(centroid_array.shape) == 1:
-        # Jeśli centroid ma 1 wymiar (d,), przekształcamy do (1, d)
         centroid_array = centroid_array.reshape(1, -1)
+    elif len(centroid_array.shape) == 3:
+        centroid_array = centroid_array.reshape(centroid_array.shape[0], -1)
+    
+    # Opcjonalna normalizacja
+    if normalize:
+        # Normalizacja L2 embeddings
+        norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
+        embeddings_array = embeddings_array / norms
+        
+        # Normalizacja L2 centroidu
+        centroid_norm = np.linalg.norm(centroid_array, axis=1, keepdims=True)
+        centroid_array = centroid_array / centroid_norm
     
     # Dodajemy centroid do embeddings
     all_embeddings = np.vstack([embeddings_array, centroid_array])
@@ -926,52 +1226,179 @@ def get_radius_interpretation(radius):
     else:
         return "🔴 Duże rozproszenie - treści są bardzo zróżnicowane"
 
-def split_into_chunks(text, provider="ollama", max_tokens=500, overlap=50):
+def split_into_chunks(text, provider="ollama"):
     """Dzieli tekst na chunki z różnymi limitami dla różnych dostawców."""
+    # Tokenizacja tekstu
     enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
     total_tokens = len(tokens)
     
-    # Ustawiamy limit tokenów w zależności od dostawcy
+    # Ustawiamy limit tokenów i overlap w zależności od dostawcy
     if provider == "openai" or provider == "jina":
         max_tokens = 8000
-        overlap = 100  # Większy overlap dla większych chunków
-    elif provider == "cohere":
-        max_tokens = 500  # Limit dla modeli Cohere - taki sam jak dla Ollama
-        overlap = 50
-    elif provider == "ollama":
+        overlap = 1200  # 15% z 8000
+    else:  # ollama, cohere i inne
         max_tokens = 500
-        overlap = 50
+        overlap = 75
     
+    # Jeśli tekst jest krótszy niż max_tokens, zwracamy go jako jeden chunk
+    if total_tokens <= max_tokens:
+        chunk_text = enc.decode(tokens)
+        print(f"[CHUNK 1/1] Rozmiar: {total_tokens} tokenów")
+        print(f"[TOKENS] Tekst zawiera {total_tokens} tokenów, podzielono na 1 chunków")
+        print(f"[ŚREDNIA] Średnio {total_tokens:.1f} tokenów na chunk")
+        print(f"[CHUNKS] Podzielono tekst na 1 chunków")
+        return [chunk_text]
+    
+    # Dla dłuższych tekstów, dzielimy na chunki z overlapem
     chunks = []
-    for i in range(0, len(tokens), max_tokens - 2*overlap):
-        start = max(0, i - overlap)
-        end = min(len(tokens), i + max_tokens - overlap)
+    # Obliczamy krok (step) - ile tokenów przesuwamy się w każdej iteracji
+    step = max_tokens - overlap
+    
+    # Dzielimy na chunki
+    for i in range(0, total_tokens, step):
+        # Określamy początek i koniec chunka
+        start = i
+        end = min(i + max_tokens, total_tokens)
+        
+        # Wycinamy chunk
         chunk = tokens[start:end]
         if chunk:
-            chunks.append(enc.decode(chunk))
+            chunk_text = enc.decode(chunk)
+            chunks.append(chunk_text)
+            # Logowanie
+            print(f"[CHUNK {len(chunks)}/{(total_tokens + step - 1) // step}] Rozmiar: {len(chunk)} tokenów")
     
-    print(f"[TOKENS] Tekst zawiera {total_tokens} tokenów")
+    # Logowanie podsumowania
+    print(f"[TOKENS] Tekst zawiera {total_tokens} tokenów, podzielono na {len(chunks)} chunków")
+    if chunks:
+        print(f"[ŚREDNIA] Średnio {total_tokens / len(chunks):.1f} tokenów na chunk")
+    print(f"[CHUNKS] Podzielono tekst na {len(chunks)} chunków")
+    
     return chunks
 
-def get_averaged_embedding(text, provider="ollama"):
+def update_progress(container, status_container, progress, status, success=False, error=False):
+    """Aktualizuje pasek postępu i status."""
+    if container is not None:
+        container.progress(progress)
+    
+    if status_container is not None:
+        if success:
+            status_container.success(status)
+        elif error:
+            status_container.error(status)
+        else:
+            status_container.info(status)
+
+def optimize_text_for_embedding(text):
+    """Optymalizuje tekst przed generowaniem embeddingów, aby zmniejszyć liczbę tokenów."""
+    start_time = time.time()
+    
+    # Usuwamy nadmiarowe białe znaki
+    whitespace_start = time.time()
+    text = ' '.join(text.split())
+    whitespace_time = time.time() - whitespace_start
+    # Usuwamy powtarzające się znaki interpunkcyjne
+    punctuation_start = time.time()
+    text = re.sub(r'([.,!?])\1+', r'\1', text)
+    punctuation_time = time.time() - punctuation_start  
+    # Usuwamy typowe elementy stopki, które mogą pozostać
+    footer_start = time.time()
+    footer_patterns = [
+        r'copyright [\d-]+',
+        r'all rights reserved',
+        r'terms (of|and) conditions',
+        r'privacy policy',
+        r'cookie policy',
+        r'kontakt',
+        r'contact us',
+        r'newsletter',
+        r'subscribe',
+        r'follow us',
+        r'social media',
+        r'share this',
+        r'comments',
+        r'related posts',
+        r'read more'
+    ]
+    
+    for pattern in footer_patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+    
+    footer_time = time.time() - footer_start  
+    # Usuwamy nadmiarowe spacje po czyszczeniu
+    final_spaces_start = time.time()
+    text = re.sub(r'\s+', ' ', text).strip()
+    final_spaces_time = time.time() - final_spaces_start
+
+    # Calculate total time and token reduction
+    total_time = time.time() - start_time
+    final_tokens = count_tokens(text)
+    return text
+
+def get_averaged_embedding(text, provider="ollama", url=None):
     """Generuje uśredniony embedding z chunków tekstu."""
+    start_time = time.time()
+    
+    # Aktualizujemy status embeddingu w UI
+    if url:
+        st.session_state.embedding_progress['current_url'] = url
+        st.session_state.embedding_progress['status'] = f"Generowanie embeddingu dla: {url}"
+    
+    # Używamy kontenerów z session_state lub tworzymy nowe jeśli nie istnieją
+    if st.session_state.progress_containers['embedding_progress'] is None:
+        st.session_state.progress_containers['embedding_progress'] = st.empty()
+    if st.session_state.progress_containers['embedding_status'] is None:
+        st.session_state.progress_containers['embedding_status'] = st.empty()
+    
+    progress_container = st.session_state.progress_containers['embedding_progress']
+    status_container = st.session_state.progress_containers['embedding_status']
+    
+    # Wyświetlamy początkowy status
+    if url:
+        progress_container.progress(0)
+        status_container.info(f"Generowanie embeddingu dla: {url}")
+
+    # Najpierw optymalizujemy tekst, aby zmniejszyć liczbę tokenów
+    if url:
+        status_container.info(f"Optymalizacja tekstu dla: {url}")
+    
+    optimization_start = time.time()
+    text = optimize_text_for_embedding(text)
+    optimization_time = time.time() - optimization_start
+    
+    # Dzielimy na chunki
+    if url:
+        status_container.info(f"Dzielenie tekstu na chunki dla: {url}")
+    
+    chunking_start = time.time()
     chunks = split_into_chunks(text, provider=provider)
+    chunking_time = time.time() - chunking_start
     print(f"[CHUNKS] Podzielono tekst na {len(chunks)} chunków")
+    
+    # Jeśli mamy tylko jeden chunk, nie musimy uśredniać
+    if len(chunks) == 1:
+        print("[EMBEDDING] Generuję embedding dla pojedynczego chunka...")
+        single_embedding = get_embeddings(chunks[0], provider=provider)
+        return single_embedding
     chunk_embeddings = []
+    successful_chunks = 0
+    failed_chunks = 0
     
     for i, chunk in enumerate(chunks, 1):
         print(f"[CHUNK {i}/{len(chunks)}] Generuję embedding...")
         embedding = get_embeddings(chunk, provider=provider)
         if embedding is not None:
             chunk_embeddings.append(embedding)
-    
-    if not chunk_embeddings:
-        return None
-        
+            successful_chunks += 1
+        else:
+            failed_chunks += 1
+    # Uśredniamy embeddingi i normalizujemy    
+    averaging_start = time.time()
     averaged_embedding = np.mean(chunk_embeddings, axis=0)
     averaged_embedding = averaged_embedding / np.linalg.norm(averaged_embedding)
-    
+    averaging_time = time.time() - averaging_start
+    print(f"[EMBEDDING] Wygenerowano uśredniony embedding z {len(chunk_embeddings)} chunków")
     return averaged_embedding
 
 # Streamlit Interface
@@ -1132,10 +1559,9 @@ if st.session_state.model_list:
         st.session_state.selected_model = selected
         print(f"Zmieniono model na: {selected}")
 
-# Debug mode toggle
-if 'debug' not in st.session_state:
-    st.session_state.debug = False
-st.sidebar.checkbox('Debug Mode', value=False, key='debug')
+
+# Debug mode toggle and debug panel
+
 
 # Najpierw pole URL referencyjnego
 reference_url = st.text_input(
@@ -1224,13 +1650,56 @@ if st.button("START"):
                 # Generowanie embeddingów
                 embeddings = []
                 valid_urls = []  # Resetujemy listę
-
+                
+                # Inicjalizujemy postęp embeddingów
+                st.session_state.embedding_progress['total'] = len(crawled_pages)
+                st.session_state.embedding_progress['completed'] = 0
+                st.session_state.embedding_progress['status'] = 'Rozpoczynam generowanie embeddingów...'
+                
+                # Nagłówek sekcji embeddingów
+                st.subheader("Generowanie embeddingów")
+                
+                # Używamy kontenerów z session_state lub tworzymy nowe jeśli nie istnieją
+                if st.session_state.progress_containers['embedding_progress'] is None:
+                    st.session_state.progress_containers['embedding_progress'] = st.empty()
+                if st.session_state.progress_containers['embedding_status'] is None:
+                    st.session_state.progress_containers['embedding_status'] = st.empty()
+                
+                progress_container = st.session_state.progress_containers['embedding_progress']
+                status_container = st.session_state.progress_containers['embedding_status']
+                
+                # Wyświetlamy początkowy pasek postępu i status
+                progress_container.progress(0)
+                status_container.info('Rozpoczynam generowanie embeddingów...')
+                
                 for url, text in crawled_pages.items():
                     print(f"Generuję embedding dla URL: {url}")
-                    embedding = get_averaged_embedding(text, provider=provider)
+                    # Aktualizujemy status
+                    st.session_state.embedding_progress['current_url'] = url
+                    st.session_state.embedding_progress['status'] = f"Generowanie embeddingu dla: {url}"
+                    update_progress(
+                        progress_container,
+                        status_container,
+                        st.session_state.embedding_progress['completed'] / st.session_state.embedding_progress['total'],
+                        st.session_state.embedding_progress['status']
+                    )
+                    
+                    # Przekazujemy URL do funkcji get_averaged_embedding
+                    embedding = get_averaged_embedding(text, provider=provider, url=url)
                     if embedding is not None:
                         embeddings.append(embedding)
                         valid_urls.append(url)
+                        
+                    # Aktualizujemy postęp
+                    st.session_state.embedding_progress['completed'] += 1
+                    st.session_state.embedding_progress['status'] = f"Zakończono {st.session_state.embedding_progress['completed']} z {st.session_state.embedding_progress['total']} embeddingów"
+                    update_progress(
+                        progress_container,
+                        status_container,
+                        st.session_state.embedding_progress['completed'] / st.session_state.embedding_progress['total'],
+                        st.session_state.embedding_progress['status'],
+                        success=(st.session_state.embedding_progress['completed'] == st.session_state.embedding_progress['total'])
+                    )
                 
                 # Najpierw obliczamy wyniki
                 if embeddings:
@@ -1491,8 +1960,8 @@ if st.button("START"):
 
     # Czyszczenie po zakończeniu
     def cleanup():
-        if os.path.exists(reference_file):
-            os.remove(reference_file)
+        # Funkcja czyszcząca zasoby po zakończeniu
+        pass
     atexit.register(cleanup)
 
 if st.sidebar.button("Wyczyść cache wyników"):
