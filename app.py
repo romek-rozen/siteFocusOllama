@@ -296,7 +296,13 @@ def get_embeddings(text, provider="ollama"):
                         embedding = np.array(data['embeddings'][0])
                         break
                 except Exception as e:
-                    print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {error_type} - {error_msg}")
+                    # If it's a requests exception, try to get more details
+                    if hasattr(e, 'response') and e.response is not None:
+                        print(f"[ERROR] Response status: {e.response.status_code}")
+                        print(f"[ERROR] Response content: {e.response.text}")
                     if attempt < max_retries - 1:
                         print(f"[INFO] Retrying in {retry_delay} seconds...")
                         time.sleep(retry_delay)
@@ -358,11 +364,41 @@ def get_embeddings(text, provider="ollama"):
                     )
                     response.raise_for_status()
                     data = response.json()
-                    if 'embeddings' in data and len(data['embeddings']) > 0:
-                        embedding = np.array(data['embeddings'][0])
-                        break
+                    
+                    # Debug: Print the full response structure
+                    print(f"[DEBUG] Cohere API response structure: {list(data.keys())}")
+                    
+                    # Check if 'embeddings' exists
+                    if 'embeddings' in data:
+                        print(f"[DEBUG] Embeddings type: {type(data['embeddings'])}")
+                        
+                        # Handle case where embeddings is a dictionary (Cohere v2 API format)
+                        if isinstance(data['embeddings'], dict):
+                            # Check if the dictionary contains the embedding values
+                            if 'float' in data['embeddings']:
+                                embedding = np.array(data['embeddings']['float'])
+                                break
+                            else:
+                                print(f"[ERROR] Embeddings dictionary does not contain 'float' key. Available keys: {list(data['embeddings'].keys())}")
+                                print(f"[DEBUG] Full embeddings content: {data['embeddings']}")
+                        # Handle case where embeddings is a list (older API format)
+                        elif isinstance(data['embeddings'], list) and len(data['embeddings']) > 0:
+                            embedding = np.array(data['embeddings'][0])
+                            break
+                        else:
+                            print(f"[ERROR] Embeddings field has unexpected format: {type(data['embeddings'])}")
+                    else:
+                        print(f"[ERROR] No 'embeddings' field in response. Available keys: {list(data.keys())}")
+                        if 'message' in data:
+                            print(f"[ERROR] API message: {data['message']}")
                 except Exception as e:
-                    print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {error_type} - {error_msg}")
+                    # If it's a requests exception, try to get more details
+                    if hasattr(e, 'response') and e.response is not None:
+                        print(f"[ERROR] Response status: {e.response.status_code}")
+                        print(f"[ERROR] Response content: {e.response.text}")
                     if attempt < max_retries - 1:
                         print(f"[INFO] Retrying in {retry_delay} seconds...")
                         time.sleep(retry_delay)
@@ -376,7 +412,13 @@ def get_embeddings(text, provider="ollama"):
         return None
         
     except Exception as e:
-        print(f"[ERROR] {provider} API error: {str(e)}")
+        error_type = type(e).__name__
+        error_msg = str(e)
+        print(f"[ERROR] {provider} API error: {error_type} - {error_msg}")
+        # If it's a requests exception, try to get more details
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[ERROR] Response status: {e.response.status_code}")
+            print(f"[ERROR] Response content: {e.response.text}")
         return None
 
 def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False, processed_sitemaps=None, all_urls=None):
@@ -529,8 +571,25 @@ def plot_gradient_strip_with_indicator(score, title):
 
 def plot_3d_tsne(embeddings, urls, centroid, deviations):
     """Interactive 3D t-SNE scatter plot with hover labels."""
+    # Sprawdzamy i dostosowujemy wymiary
+    print(f"[DEBUG] Embeddings shape for 3D: {np.array(embeddings).shape}")
+    print(f"[DEBUG] Centroid shape for 3D: {np.array(centroid).shape}")
+    
+    # Upewniamy się, że embeddings ma 2 wymiary
+    embeddings_array = np.array(embeddings)
+    if len(embeddings_array.shape) == 3:
+        # Jeśli embeddings ma 3 wymiary (n, d, 1), przekształcamy do (n, d)
+        embeddings_array = embeddings_array.squeeze(axis=2)
+    
+    # Upewniamy się, że centroid ma 2 wymiary
+    centroid_array = np.array(centroid)
+    if len(centroid_array.shape) == 1:
+        # Jeśli centroid ma 1 wymiar (d,), przekształcamy do (1, d)
+        centroid_array = centroid_array.reshape(1, -1)
+    
+    # Wykonujemy t-SNE
     tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(embeddings) - 1))
-    tsne_results = tsne.fit_transform(np.vstack([embeddings, centroid]))
+    tsne_results = tsne.fit_transform(np.vstack([embeddings_array, centroid_array]))
     centroid_tsne = tsne_results[-1]
     tsne_results = tsne_results[:-1]
 
@@ -776,8 +835,24 @@ def plot_distance_distribution(deviations):
 
 def plot_2d_tsne(embeddings, urls, centroid, deviations):
     """2D t-SNE scatter plot with hover labels."""
+    # Sprawdzamy i dostosowujemy wymiary
+    print(f"[DEBUG] Embeddings shape: {np.array(embeddings).shape}")
+    print(f"[DEBUG] Centroid shape: {np.array(centroid).shape}")
+    
+    # Upewniamy się, że embeddings ma 2 wymiary
+    embeddings_array = np.array(embeddings)
+    if len(embeddings_array.shape) == 3:
+        # Jeśli embeddings ma 3 wymiary (n, d, 1), przekształcamy do (n, d)
+        embeddings_array = embeddings_array.squeeze(axis=2)
+    
+    # Upewniamy się, że centroid ma 2 wymiary
+    centroid_array = np.array(centroid)
+    if len(centroid_array.shape) == 1:
+        # Jeśli centroid ma 1 wymiar (d,), przekształcamy do (1, d)
+        centroid_array = centroid_array.reshape(1, -1)
+    
     # Dodajemy centroid do embeddings
-    all_embeddings = np.vstack([embeddings, centroid])
+    all_embeddings = np.vstack([embeddings_array, centroid_array])
     
     # Wykonujemy t-SNE
     tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(embeddings) - 1))
