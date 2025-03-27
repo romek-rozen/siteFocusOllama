@@ -21,3 +21,6 @@ reference_text.txt
 
 .cfg
 htmltomarkdown.py
+app copy 3.py
+app copy 2.py
+.DS_Store

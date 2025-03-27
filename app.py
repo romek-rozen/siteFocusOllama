@@ -68,7 +68,8 @@ if st.sidebar.button("Wyczyść cache crawla"):
 if 'api_keys' not in st.session_state:
     st.session_state.api_keys = {
         'openai': None,
-        'jina': None
+        'jina': None,
+        'cohere': None
     }
 
 def clean_text(text):
@@ -338,6 +339,35 @@ def get_embeddings(text, provider="ollama"):
             data = response.json()
             if 'data' in data and len(data['data']) > 0:
                 embedding = np.array(data['data'][0]['embedding'])
+        
+        elif provider == "cohere":
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        "https://api.cohere.com/v2/embed",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {st.session_state.api_keys['cohere']}"
+                        },
+                        json={
+                            "model": st.session_state.selected_model,
+                            "texts": [text],
+                            "input_type": "search_document",
+                            "embedding_types": ["float"]
+                        }
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if 'embeddings' in data and len(data['embeddings']) > 0:
+                        embedding = np.array(data['embeddings'][0])
+                        break
+                except Exception as e:
+                    print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                    if attempt < max_retries - 1:
+                        print(f"[INFO] Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    raise  # Re-raise the last exception if all retries failed
         
         if embedding is not None:
             st.session_state.embeddings_cache[cache_key] = embedding
@@ -831,6 +861,12 @@ def split_into_chunks(text, provider="ollama", max_tokens=500, overlap=50):
     if provider == "openai" or provider == "jina":
         max_tokens = 8000
         overlap = 100  # Większy overlap dla większych chunków
+    elif provider == "cohere":
+        max_tokens = 500  # Limit dla modeli Cohere - taki sam jak dla Ollama
+        overlap = 50
+    elif provider == "ollama":
+        max_tokens = 500
+        overlap = 50
     
     chunks = []
     for i in range(0, len(tokens), max_tokens - 2*overlap):
@@ -882,7 +918,7 @@ col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
     provider = st.radio(
         "Wybierz dostawcę:",
-        options=["Ollama", "OpenAI", "Jina"],
+        options=["Ollama", "OpenAI", "Jina", "Cohere"],
         index=0,
     ).lower()
 
@@ -899,9 +935,12 @@ with col2:
     elif provider == "jina":
         st.session_state.host = "https://api.jina.ai/v1/"
         st.write(f"Endpoint: {st.session_state.host}")
+    elif provider == "cohere":
+        st.session_state.host = "https://api.cohere.com/v2/"
+        st.write(f"Endpoint: {st.session_state.host}")
 
 with col3:
-    if provider in ["openai", "jina"]:
+    if provider in ["openai", "jina", "cohere"]:
         api_key = st.text_input(
             "Klucz API:",
             type="password",
@@ -956,6 +995,48 @@ if st.button("Pobierz modele"):
         else:
             st.session_state.model_list = ["jina-clip-v2", "jina-embeddings-v3"]
             st.success("Pobrano listę modeli")
+            
+    elif provider == "cohere":
+        if not st.session_state.api_keys.get('cohere'):
+            st.error("Wprowadź klucz API Cohere")
+        else:
+            try:
+                # Próba pobrania listy modeli z API
+                response = requests.get(
+                    "https://api.cohere.com/v1/models",
+                    headers={
+                        "Authorization": f"Bearer {st.session_state.api_keys['cohere']}"
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                # Filtrowanie tylko modeli embeddingowych
+                embedding_models = [model['name'] for model in data.get('models', []) 
+                                   if 'embed' in model.get('name', '').lower()]
+                
+                if embedding_models:
+                    st.session_state.model_list = embedding_models
+                    st.success(f"Pobrano {len(embedding_models)} modeli Cohere")
+                else:
+                    # Fallback do hardcodowanej listy
+                    st.session_state.model_list = [
+                        "embed-english-v3.0", 
+                        "embed-english-light-v3.0", 
+                        "embed-multilingual-v3.0", 
+                        "embed-multilingual-light-v3.0"
+                    ]
+                    st.warning("Nie znaleziono modeli embeddingowych. Używam domyślnej listy.")
+            except Exception as e:
+                print(f"[ERROR] Nie udało się pobrać listy modeli Cohere: {str(e)}")
+                # Fallback do hardcodowanej listy
+                st.session_state.model_list = [
+                    "embed-english-v3.0", 
+                    "embed-english-light-v3.0", 
+                    "embed-multilingual-v3.0", 
+                    "embed-multilingual-light-v3.0"
+                ]
+                st.warning("Nie udało się pobrać listy modeli. Używam domyślnej listy.")
 
 # W miejscu gdzie wybieramy model
 if st.session_state.model_list:
@@ -1018,6 +1099,9 @@ if st.button("START"):
         st.stop()
     elif provider == "jina" and not st.session_state.api_keys.get('jina'):
         st.error("Nie podano klucza API Jina!")
+        st.stop()
+    elif provider == "cohere" and not st.session_state.api_keys.get('cohere'):
+        st.error("Nie podano klucza API Cohere!")
         st.stop()
 
     if domains:
@@ -1346,7 +1430,7 @@ st.sidebar.info(f"ID sesji: {st.session_state.session_id[:8]}...")
 if st.sidebar.button("Wyczyść klucze API"):
     st.session_state.api_keys = {
         'openai': None,
-        'jina': None
+        'jina': None,
+        'cohere': None
     }
     st.success("Klucze API zostały wyczyszczone!")
-

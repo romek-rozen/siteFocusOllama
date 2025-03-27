@@ -13,3 +13,4 @@ lxml>=4.9.0  # dla parsowania XML w BeautifulSoup
 markdownify>=0.1.0
 brotli==1.0.9
 uuid>=0.1.0
+cohere>=4.37  # dla obsługi Cohere Embedding API
